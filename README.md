@@ -66,7 +66,19 @@ _The UI shows an interactive diagram of the MX Master 3S. Click any button's hot
 
 ---
 
-## Installation
+## Quick Start (Portable — no install needed)
+
+1. **Download** the latest `LogiControl.zip` from the [Releases](https://github.com/YOUR_USERNAME/logi-control/releases) page
+2. **Extract** the zip to any folder  
+3. **Run** `LogiControl.exe`
+
+That's it — no Python, no dependencies, no installer. The app stores its config in `%APPDATA%\LogiControl`.
+
+> **Note:** Windows SmartScreen may show a warning the first time. Click **More info → Run anyway**.
+
+---
+
+## Installation (from source)
 
 ### Prerequisites
 
@@ -128,6 +140,23 @@ $s.WorkingDirectory = "C:\path\to\logi-control"
 $s.IconLocation = "C:\path\to\logi-control\images\logo.ico, 0"
 $s.Save()
 ```
+
+### Building the Portable App
+
+To produce a standalone `LogiControl.exe` that anyone can download and run without Python:
+
+```bash
+# 1. Install PyInstaller (inside your venv)
+pip install pyinstaller
+
+# 2. Build using the included spec file
+pyinstaller LogiControl.spec --noconfirm
+
+# — or simply run the build script —
+build.bat
+```
+
+The output is in `dist\LogiControl\`. Zip that entire folder and distribute it.
 
 ---
 

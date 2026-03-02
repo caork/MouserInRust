@@ -9,8 +9,12 @@ Run with:   python main_qml.py
 import sys
 import os
 
-# Ensure project root on path
-ROOT = os.path.dirname(os.path.abspath(__file__))
+# Ensure project root on path — works for both normal Python and PyInstaller
+if getattr(sys, "frozen", False):
+    # PyInstaller 6.x: data files are in _internal/ next to the exe
+    ROOT = os.path.join(os.path.dirname(sys.executable), "_internal")
+else:
+    ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, ROOT)
 
 # Set Material theme before any Qt imports
@@ -46,10 +50,8 @@ def main():
     app.setOrganizationName("LogiControl")
     app.setWindowIcon(_app_icon())
 
-    # ── Engine ─────────────────────────────────────────────────
+    # ── Engine (created but started AFTER UI is visible) ───────
     engine = Engine()
-    engine.start()
-    print("[LogiControl] Engine started — remapping is active")
 
     # ── QML Backend ────────────────────────────────────────────
     backend = Backend(engine)
@@ -68,6 +70,13 @@ def main():
         sys.exit(1)
 
     root_window = qml_engine.rootObjects()[0]
+
+    # ── Start engine AFTER window is ready (deferred) ──────────
+    from PySide6.QtCore import QTimer
+    QTimer.singleShot(0, lambda: (
+        engine.start(),
+        print("[LogiControl] Engine started — remapping is active"),
+    ))
 
     # ── System Tray ────────────────────────────────────────────
     tray = QSystemTrayIcon(_app_icon(), app)
