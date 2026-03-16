@@ -82,11 +82,15 @@ if _MAC_NATIVE_OK:
     class _MacNativeHidDevice:
         """Minimal IOHIDDevice wrapper for Logitech BLE HID++ on macOS."""
 
-        def __init__(self, product_id):
+        def __init__(self, product_id, usage_page=0, usage=0, transport=None):
             self._product_id = int(product_id)
+            self._usage_page = int(usage_page or 0)
+            self._usage = int(usage or 0)
+            self._transport = transport or None
             self._manager = None
             self._matching = None
             self._device = None
+            self._matching_refs = []
 
         @staticmethod
         def _cfstring(text):
@@ -108,13 +112,21 @@ if _MAC_NATIVE_OK:
                 self._cfnumber(LOGI_VID),
                 self._cfnumber(self._product_id),
             ]
+            if self._usage_page > 0:
+                keys.append(self._cfstring("PrimaryUsagePage"))
+                values.append(self._cfnumber(self._usage_page))
+            if self._usage > 0:
+                keys.append(self._cfstring("PrimaryUsage"))
+                values.append(self._cfnumber(self._usage))
+            if self._transport:
+                keys.append(self._cfstring("Transport"))
+                values.append(self._cfstring(self._transport))
             key_array = (c_void_p * len(keys))(*keys)
             value_array = (c_void_p * len(values))(*values)
             self._matching = _cf.CFDictionaryCreate(
                 None, key_array, value_array, len(keys), None, None
             )
-            for item in keys + values:
-                _cf.CFRelease(item)
+            self._matching_refs = keys + values
 
             self._manager = _iokit.IOHIDManagerCreate(None, 0)
             if not self._manager:
@@ -126,11 +138,11 @@ if _MAC_NATIVE_OK:
 
             devices = _iokit.IOHIDManagerCopyDevices(self._manager)
             if not devices:
-                raise OSError(f"No IOHIDDevice for PID 0x{self._product_id:04X}")
+                raise OSError(self._describe_match_failure())
             try:
                 count = _cf.CFSetGetCount(devices)
                 if count <= 0:
-                    raise OSError(f"No IOHIDDevice for PID 0x{self._product_id:04X}")
+                    raise OSError(self._describe_match_failure())
                 values_buf = (c_void_p * count)()
                 _cf.CFSetGetValues(devices, values_buf)
                 self._device = _cf.CFRetain(values_buf[0])
@@ -140,6 +152,16 @@ if _MAC_NATIVE_OK:
             res = _iokit.IOHIDDeviceOpen(self._device, 0)
             if res != 0:
                 raise OSError(f"IOHIDDeviceOpen failed: 0x{res:08X}")
+
+        def _describe_match_failure(self):
+            parts = [f"PID 0x{self._product_id:04X}"]
+            if self._usage_page > 0:
+                parts.append(f"UP 0x{self._usage_page:04X}")
+            if self._usage > 0:
+                parts.append(f"usage 0x{self._usage:04X}")
+            if self._transport:
+                parts.append(f'transport "{self._transport}"')
+            return "No IOHIDDevice for " + " ".join(parts)
 
         def close(self):
             if self._device:
@@ -156,6 +178,9 @@ if _MAC_NATIVE_OK:
             if self._manager:
                 _cf.CFRelease(self._manager)
                 self._manager = None
+            for item in self._matching_refs:
+                _cf.CFRelease(item)
+            self._matching_refs = []
 
         def set_nonblocking(self, _enabled):
             return None
@@ -257,7 +282,7 @@ class HidGestureListener:
     # ── public API ────────────────────────────────────────────────
 
     def start(self):
-        if not HIDAPI_OK and not _MAC_NATIVE_OK:
+        if not HIDAPI_OK:
             print("[HidGesture] 'hidapi' not installed — pip install hidapi")
             return False
         self._running = True
@@ -540,42 +565,51 @@ class HidGestureListener:
     def _try_connect(self):
         """Open the vendor HID collection, discover features, divert."""
         infos = self._vendor_hid_infos()
-        if sys.platform == "darwin" and _MAC_NATIVE_OK and infos:
-            # hidapi often fails to open Logitech's BLE path on macOS, but
-            # the same HID++ reports can work via native IOHIDDevice APIs.
-            native_infos = []
-            seen_pids = set()
-            for info in infos:
-                pid = info.get("product_id", 0)
-                if pid in seen_pids:
-                    continue
-                seen_pids.add(pid)
-                native_infos.append({
-                    "product_id": pid,
-                    "usage_page": info.get("usage_page", 0),
-                    "native": True,
-                })
-            infos = native_infos + infos
         if not infos:
             return False
 
         for info in infos:
             pid = info.get("product_id", 0)
-            up  = info.get("usage_page", 0)
-            try:
-                if info.get("native"):
-                    d = _MacNativeHidDevice(pid)
-                    d.open()
-                else:
-                    d = _hid.device()
-                    d.open_path(info["path"])
-                    d.set_nonblocking(False)
-                self._dev = d
-                transport = "iokit" if info.get("native") else "hidapi"
-                print(f"[HidGesture] Opened PID=0x{pid:04X} via {transport}")
-            except Exception as exc:
-                print(f"[HidGesture] Can't open PID=0x{pid:04X} "
-                      f"UP=0x{up:04X}: {exc}")
+            up = info.get("usage_page", 0)
+            usage = info.get("usage", 0)
+            open_attempts = [("hidapi", info)]
+            if sys.platform == "darwin" and _MAC_NATIVE_OK:
+                open_attempts.extend([
+                    ("iokit-exact", info),
+                    ("iokit-ble", {
+                        "product_id": pid,
+                        "usage_page": 0,
+                        "usage": 0,
+                        "transport": "Bluetooth Low Energy",
+                    }),
+                ])
+
+            for transport, open_info in open_attempts:
+                try:
+                    if transport.startswith("iokit"):
+                        d = _MacNativeHidDevice(
+                            pid,
+                            usage_page=open_info.get("usage_page", 0),
+                            usage=open_info.get("usage", 0),
+                            transport=open_info.get("transport"),
+                        )
+                        d.open()
+                    else:
+                        if not HIDAPI_OK:
+                            continue
+                        d = _hid.device()
+                        d.open_path(open_info["path"])
+                        d.set_nonblocking(False)
+                    self._dev = d
+                    print(f"[HidGesture] Opened PID=0x{pid:04X} via {transport}")
+                    break
+                except Exception as exc:
+                    print(f"[HidGesture] Can't open PID=0x{pid:04X} "
+                          f"UP=0x{int(open_info.get('usage_page', up) or 0):04X} "
+                          f"usage=0x{int(open_info.get('usage', usage) or 0):04X} "
+                          f"via {transport}: {exc}")
+                    self._dev = None
+            if self._dev is None:
                 continue
 
             # Try Bluetooth direct (0xFF) first, then Bolt receiver slots
