@@ -6,6 +6,7 @@ Supports per-application profiles (for future use).
 import json
 import os
 import sys
+from urllib.parse import quote
 from core import app_catalog
 
 CONFIG_DIR = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), "Mouser")
@@ -114,15 +115,21 @@ KNOWN_APPS = {
 
 
 def get_icon_for_exe(exe_name: str) -> str:
-    """Return the icon image filename (relative to images/) for an exe, or ''."""
-    info = KNOWN_APPS.get(exe_name, {})
-    icon = info.get("icon", "")
-    if not icon:
+    """Return an image:// URL for the app icon, or '' if unavailable."""
+    if not exe_name:
         return ""
-    # If icon already has extension, use as-is; otherwise assume .png
-    if "." in icon:
-        return icon
-    return icon + ".png"
+    # Full path on disk → extract icon via SystemIconProvider
+    if os.path.isabs(exe_name) and os.path.exists(exe_name):
+        encoded = quote(exe_name.replace("\\", "/"), safe="/:")
+        return f"image://systemicons/{encoded}"
+    # Exe name / label → look up installed path via app catalog
+    entry = app_catalog.resolve_app_spec(exe_name)
+    if entry:
+        path = entry.get("path", "")
+        if path and os.path.exists(path):
+            encoded = quote(path.replace("\\", "/"), safe="/:")
+            return f"image://systemicons/{encoded}"
+    return ""
 
 
 def ensure_config_dir():

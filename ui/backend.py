@@ -3,6 +3,8 @@ QML Backend Bridge — connects the QML UI to the engine and config.
 Exposes properties, signals, and slots for two-way data binding.
 """
 
+import os
+import re
 import sys
 import time
 
@@ -11,8 +13,9 @@ from PySide6.QtCore import QObject, Property, Signal, Slot, Qt
 from core.config import (
     BUTTON_NAMES, load_config, save_config, get_active_mappings,
     PROFILE_BUTTON_NAMES, set_mapping, create_profile, delete_profile,
-    KNOWN_APPS, get_icon_for_exe,
+    get_icon_for_exe,
 )
+from core import app_catalog
 from core.device_layouts import get_device_layout, get_manual_layout_choices
 from core.logi_devices import DEFAULT_DPI_MAX, DEFAULT_DPI_MIN, clamp_dpi
 from core.key_simulator import ACTIONS
@@ -298,22 +301,29 @@ class Backend(QObject):
         result = []
         active = self._cfg.get("active_profile", "default")
         for pname, pdata in self._cfg.get("profiles", {}).items():
-            # Collect icons for all apps in this profile
             apps = pdata.get("apps", [])
-            app_icons = [get_icon_for_exe(ex) for ex in apps]
             result.append({
                 "name": pname,
                 "label": pdata.get("label", pname),
                 "apps": apps,
-                "appIcons": app_icons,
+                "appIcons": [get_icon_for_exe(ex) for ex in apps],
+                "displayApps": [app_catalog.get_app_label(ex) for ex in apps],
                 "isActive": pname == active,
             })
         return result
 
     @Property(list, constant=True)
     def knownApps(self):
-        return [{"exe": ex, "label": info["label"], "icon": get_icon_for_exe(ex)}
-                for ex, info in KNOWN_APPS.items()]
+        result = []
+        for entry in app_catalog.get_app_catalog():
+            icon = get_icon_for_exe(entry.get("path", ""))
+            result.append({
+                "id": entry["id"],
+                "label": entry.get("label", entry["id"]),
+                "aliases": entry.get("aliases", []),
+                "iconSource": icon,
+            })
+        return result
 
     # ── Slots ──────────────────────────────────────────────────
 
@@ -431,22 +441,47 @@ class Backend(QObject):
         self.gestureRecordsChanged.emit()
 
     @Slot(str)
-    def addProfile(self, appLabel):
-        """Create a new per-app profile from the known-apps label."""
-        exe = None
-        for ex, info in KNOWN_APPS.items():
-            if info["label"] == appLabel:
-                exe = ex
-                break
-        if not exe:
+    def addProfile(self, appId):
+        """Create a new per-app profile from an app catalog ID."""
+        entry = app_catalog.resolve_app_spec(appId)
+        if not entry:
             return
+        app_spec = entry.get("path") or entry["id"]
+        label = entry.get("label", appId)
         for pdata in self._cfg.get("profiles", {}).values():
-            if exe.lower() in [a.lower() for a in pdata.get("apps", [])]:
+            if app_spec.lower() in [a.lower() for a in pdata.get("apps", [])]:
                 self.statusMessage.emit("Profile already exists")
                 return
-        safe_name = exe.replace(".exe", "").lower()
-        self._cfg = create_profile(
-            self._cfg, safe_name, label=appLabel, apps=[exe])
+        safe_name = re.sub(r"[^a-z0-9_]", "_", label.lower())[:32].strip("_")
+        self._cfg = create_profile(self._cfg, safe_name, label=label, apps=[app_spec])
+        if self._engine:
+            self._engine.cfg = self._cfg
+        self.profilesChanged.emit()
+        self.statusMessage.emit("Profile created")
+
+    @Slot()
+    def browseForAppProfile(self):
+        """Open a file picker, then create a profile for the selected app."""
+        from PySide6.QtWidgets import QFileDialog
+        if sys.platform == "darwin":
+            path, _ = QFileDialog.getOpenFileName(
+                None, "Select Application", "/Applications", "Apps (*.app)")
+        else:
+            path, _ = QFileDialog.getOpenFileName(
+                None, "Select Application",
+                os.environ.get("ProgramFiles", "C:\\Program Files"),
+                "Executables (*.exe)")
+        if not path:
+            return
+        path = os.path.normpath(path)
+        entry = app_catalog.resolve_app_spec(path)
+        label = entry.get("label") if entry else os.path.splitext(os.path.basename(path))[0]
+        for pdata in self._cfg.get("profiles", {}).values():
+            if path.lower() in [a.lower() for a in pdata.get("apps", [])]:
+                self.statusMessage.emit("Profile already exists")
+                return
+        safe_name = re.sub(r"[^a-z0-9_]", "_", label.lower())[:32].strip("_")
+        self._cfg = create_profile(self._cfg, safe_name, label=label, apps=[path])
         if self._engine:
             self._engine.cfg = self._cfg
         self.profilesChanged.emit()
