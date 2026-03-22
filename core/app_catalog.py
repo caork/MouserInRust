@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import plistlib
+import posixpath
 import sys
 import threading
 from pathlib import Path
@@ -374,7 +375,14 @@ def _hint_for(spec: str):
 
 
 def _make_entry(app_id: str, label: str, *, path: str = "", aliases=None, legacy_icon: str = ""):
-    normalized_path = os.path.abspath(path) if path else ""
+    if not path:
+        normalized_path = ""
+    elif sys.platform == "darwin":
+        normalized_path = (
+            posixpath.normpath(path) if os.path.isabs(path) else os.path.abspath(path)
+        )
+    else:
+        normalized_path = os.path.abspath(path)
     alias_values = list(aliases or [])
     alias_values.extend([app_id, label])
     if normalized_path:
@@ -713,7 +721,10 @@ def _resolve_path_entry(path: str):
     if not path:
         return None
 
-    normalized = os.path.abspath(path)
+    if sys.platform == "darwin":
+        normalized = posixpath.normpath(path)
+    else:
+        normalized = os.path.abspath(path)
     path_exists = os.path.exists(normalized)
 
     if sys.platform == "darwin" and normalized.endswith(".app"):
