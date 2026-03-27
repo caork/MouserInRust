@@ -22,6 +22,7 @@ a = Analysis(
     ],
     hiddenimports=[
         "hid",
+        "logging.handlers",
         "evdev",
         "ui.locale_manager",
         "PySide6.QtQuick",

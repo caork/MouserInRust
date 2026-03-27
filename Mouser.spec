@@ -27,6 +27,7 @@ a = Analysis(
     hiddenimports=[
         # conditional / lazy imports PyInstaller may miss
         "hid",
+        "logging.handlers",
         "ctypes.wintypes",
         "ui.locale_manager",
         # PySide6 QML runtime
