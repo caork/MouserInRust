@@ -923,23 +923,16 @@ impl Worker {
     fn try_connect(&mut self) -> bool {
         #[cfg(target_os = "macos")]
         {
-            if self.backend == HidBackend::Auto {
-                // Hybrid approach: hidapi for writes (HID++ via UP=0xFF43) +
-                // IOKit native for reads (ALL reports via UP=0x0001 BLE).
-                // This solves the BLE issue where hidapi doesn't deliver async
-                // HID++ notification reports.
-                if self.try_connect_hybrid() {
-                    return true;
-                }
-                info!("[HidGesture] Hybrid connect failed, trying pure native IOKit");
-            }
-
+            // On macOS, try native IOKit FIRST.  hidapi seizes the device
+            // exclusively which prevents IOKit from opening it afterwards.
+            // The native IOKit backend with manager-level callbacks can
+            // potentially receive ALL report types including HID++ async
+            // notifications on BLE devices.
             if self.backend != HidBackend::Hidapi {
                 if self.try_connect_native() {
                     return true;
                 }
                 if self.backend == HidBackend::IOKit {
-                    // User explicitly requested IOKit; don't fall back
                     return false;
                 }
                 info!("[HidGesture] Native IOKit backend failed, falling back to hidapi");

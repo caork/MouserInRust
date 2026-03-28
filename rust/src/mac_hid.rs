@@ -60,6 +60,7 @@ type IOHIDReportCallback = unsafe extern "C" fn(
 
 extern "C" {
     static kCFRunLoopDefaultMode: CFRunLoopMode;
+    static kCFRunLoopCommonModes: CFRunLoopMode;
     static kCFTypeDictionaryKeyCallBacks: c_void;
     static kCFTypeDictionaryValueCallBacks: c_void;
 
@@ -158,6 +159,18 @@ extern "C" {
         device: IOHIDDeviceRef,
         run_loop: CFRunLoopRef,
         run_loop_mode: CFRunLoopMode,
+    );
+    fn IOHIDManagerScheduleWithRunLoop(
+        manager: IOHIDManagerRef,
+        run_loop: CFRunLoopRef,
+        run_loop_mode: CFRunLoopMode,
+    );
+    fn IOHIDManagerRegisterInputReportCallback(
+        manager: IOHIDManagerRef,
+        report: *mut u8,
+        report_length: CFIndex,
+        callback: IOHIDReportCallback,
+        context: *mut c_void,
     );
     fn IOHIDDeviceUnscheduleFromRunLoop(
         device: IOHIDDeviceRef,
@@ -647,7 +660,9 @@ impl MacNativeHidDevice {
             );
 
             // Open the device
+            info!("[MacHid] open_ble: calling IOHIDDeviceOpen...");
             let ret = IOHIDDeviceOpen(device, 0);
+            info!("[MacHid] open_ble: IOHIDDeviceOpen returned 0x{:08X}", ret);
             if ret != kIOReturnSuccess {
                 CFRelease(dev_ref);
                 CFRelease(manager as CFTypeRef);
@@ -678,7 +693,7 @@ impl MacNativeHidDevice {
             let ctx_box = Box::new(queue.clone());
             let ctx_ptr = Box::into_raw(ctx_box);
 
-            // Schedule with run loop, then register callback
+            // Schedule device with DefaultMode (CommonModes may cause hangs)
             IOHIDDeviceScheduleWithRunLoop(device, run_loop, kCFRunLoopDefaultMode);
             IOHIDDeviceRegisterInputReportCallback(
                 device,
@@ -687,6 +702,10 @@ impl MacNativeHidDevice {
                 native_report_callback,
                 ctx_ptr as *mut c_void,
             );
+
+            // NOTE: IOHIDManagerScheduleWithRunLoop + IOHIDManagerRegisterInputReportCallback
+            // causes hangs on some macOS + BLE combinations. Disabled for now.
+            // The device-level callback should be sufficient for receiving reports.
 
             info!(
                 "[MacHid] open_ble: opened PID=0x{:04X} (manager retained)",
