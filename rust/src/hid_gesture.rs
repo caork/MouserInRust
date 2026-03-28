@@ -10,6 +10,10 @@
 
 #![allow(dead_code)]
 
+#[cfg(target_os = "macos")]
+#[path = "mac_hid.rs"]
+mod mac_hid;
+
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -204,17 +208,63 @@ pub fn vendor_hid_infos() -> Vec<HidDeviceInfo> {
 
 // ── Backend selector ──────────────────────────────────────────────────────────
 
-/// Which HID backend to use.  On macOS the hidapi crate uses IOKit natively,
-/// so `Auto` and `Hidapi` are equivalent — no special handling needed.
+/// Which HID backend to use.
+///
+/// On macOS, `Auto` tries the native IOKit backend first (which receives all
+/// HID report types including HID++ 0x10/0x11), then falls back to `hidapi`.
+/// `IOKit` forces the native backend; `Hidapi` forces the hidapi crate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HidBackend {
     Auto,
     Hidapi,
+    /// Native macOS IOKit backend (receives HID++ reports on BLE devices).
+    IOKit,
 }
 
 impl Default for HidBackend {
     fn default() -> Self {
         HidBackend::Auto
+    }
+}
+
+// ── HID device abstraction ────────────────────────────────────────────────────
+
+/// Wrapper that abstracts over `hidapi::HidDevice` and the native macOS
+/// `MacNativeHidDevice`.  The Worker uses this so the rest of the code is
+/// backend-agnostic.
+enum HidDeviceWrapper {
+    Hidapi(HidDevice),
+    #[cfg(target_os = "macos")]
+    Native(mac_hid::MacNativeHidDevice),
+    /// Hybrid: writes go through `hidapi` (UP=0xFF43, HID++ works) while
+    /// reads come from the native IOKit callback reader (UP=0x0001, receives
+    /// ALL report types including async HID++ notifications on BLE).
+    #[cfg(target_os = "macos")]
+    Hybrid {
+        writer: HidDevice,
+        reader: mac_hid::MacNativeHidDevice,
+    },
+}
+
+impl HidDeviceWrapper {
+    fn write(&self, data: &[u8]) -> Result<usize, String> {
+        match self {
+            Self::Hidapi(dev) => dev.write(data).map_err(|e| e.to_string()),
+            #[cfg(target_os = "macos")]
+            Self::Native(dev) => dev.write(data),
+            #[cfg(target_os = "macos")]
+            Self::Hybrid { writer, .. } => writer.write(data).map_err(|e| e.to_string()),
+        }
+    }
+
+    fn read_timeout(&self, buf: &mut [u8], timeout_ms: i32) -> Result<usize, String> {
+        match self {
+            Self::Hidapi(dev) => dev.read_timeout(buf, timeout_ms).map_err(|e| e.to_string()),
+            #[cfg(target_os = "macos")]
+            Self::Native(dev) => dev.read_timeout(buf, timeout_ms),
+            #[cfg(target_os = "macos")]
+            Self::Hybrid { reader, .. } => reader.read_timeout(buf, timeout_ms),
+        }
     }
 }
 
@@ -328,7 +378,7 @@ impl ControlInfo {
 
 /// Internal state that lives on the background thread.
 struct Worker {
-    dev: Option<HidDevice>,
+    dev: Option<HidDeviceWrapper>,
     dev_idx: u8,
     feat_idx: Option<u8>,       // REPROG_V4
     dpi_idx: Option<u8>,        // ADJUST_DPI
@@ -429,7 +479,7 @@ impl Worker {
             Ok(0) => None,
             Ok(n) => Some(buf[..n].to_vec()),
             Err(e) => {
-                debug!("[HidGesture] read error: {e}");
+                debug!("[HidGesture] read error: {}", e);
                 None
             }
         }
@@ -669,8 +719,16 @@ impl Worker {
     fn on_report(&mut self, raw: &[u8]) {
         let msg = match parse_report(raw) {
             Some(m) => m,
-            None => return,
+            None => {
+                debug!("[HidGesture] on_report: parse_report returned None for {} bytes", raw.len());
+                return;
+            }
         };
+
+        debug!(
+            "[HidGesture] on_report: devIdx=0x{:02X} featIdx=0x{:02X} func={} (expected featIdx={:?})",
+            msg.dev_idx, msg.feat_idx, msg.func, self.feat_idx
+        );
 
         if Some(msg.feat_idx) != self.feat_idx {
             return;
@@ -863,6 +921,202 @@ impl Worker {
     // ── Connect ───────────────────────────────────────────────────────────────
 
     fn try_connect(&mut self) -> bool {
+        #[cfg(target_os = "macos")]
+        {
+            if self.backend == HidBackend::Auto {
+                // Hybrid approach: hidapi for writes (HID++ via UP=0xFF43) +
+                // IOKit native for reads (ALL reports via UP=0x0001 BLE).
+                // This solves the BLE issue where hidapi doesn't deliver async
+                // HID++ notification reports.
+                if self.try_connect_hybrid() {
+                    return true;
+                }
+                info!("[HidGesture] Hybrid connect failed, trying pure native IOKit");
+            }
+
+            if self.backend != HidBackend::Hidapi {
+                if self.try_connect_native() {
+                    return true;
+                }
+                if self.backend == HidBackend::IOKit {
+                    // User explicitly requested IOKit; don't fall back
+                    return false;
+                }
+                info!("[HidGesture] Native IOKit backend failed, falling back to hidapi");
+            }
+        }
+
+        self.try_connect_hidapi()
+    }
+
+    /// Hybrid connect: use `hidapi` for writes (HID++ via UP=0xFF43 interface)
+    /// and IOKit native for reads (via UP=0x0001 BLE interface that receives
+    /// ALL report types including async HID++ notifications).
+    ///
+    /// This solves the macOS BLE issue where `hidapi`'s `read_timeout` only
+    /// delivers mouse reports (0x02) but not HID++ notifications (0x10/0x11),
+    /// while IOKit native on UP=0x0001 receives everything but can't write
+    /// HID++ commands (returns UNSUPPORTED).
+    #[cfg(target_os = "macos")]
+    fn try_connect_hybrid(&mut self) -> bool {
+        // Step 1: Open hidapi writer (UP >= 0xFF00, the HID++ interface)
+        let hidapi_infos = vendor_hid_infos();
+        if hidapi_infos.is_empty() {
+            debug!("[HidGesture] Hybrid: no hidapi HID++ interfaces found");
+            return false;
+        }
+
+        let api = match HidApi::new() {
+            Ok(a) => a,
+            Err(e) => {
+                warn!("[HidGesture] Hybrid: HidApi::new: {e}");
+                return false;
+            }
+        };
+
+        // Try each hidapi candidate as the writer
+        for info in &hidapi_infos {
+            info!(
+                "[HidGesture] Hybrid: trying hidapi writer PID=0x{:04X} UP=0x{:04X} product={}",
+                info.product_id, info.usage_page, info.product_string
+            );
+
+            let path = match std::ffi::CString::new(info.path.clone()) {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+
+            let writer = match api.open_path(&path) {
+                Ok(dev) => dev,
+                Err(e) => {
+                    warn!("[HidGesture] Hybrid: can't open hidapi writer: {e}");
+                    continue;
+                }
+            };
+
+            // Step 2: Find and open the IOKit native BLE reader (UP=0x0001)
+            // for the same physical device (matching ProductID).
+            let ble_infos = mac_hid::MacHidEnumerator::enumerate_ble(LOGITECH_VID);
+            let reader_info = ble_infos.into_iter().find(|bi| {
+                bi.product_id == info.product_id && bi.usage_page == 0x0001
+            });
+
+            let reader_info = match reader_info {
+                Some(ri) => ri,
+                None => {
+                    debug!(
+                        "[HidGesture] Hybrid: no BLE UP=0x0001 reader for PID=0x{:04X}, skipping hybrid",
+                        info.product_id
+                    );
+                    // Not a BLE device or no matching reader; skip hybrid for this device
+                    continue;
+                }
+            };
+
+            info!(
+                "[HidGesture] Hybrid: opening IOKit reader PID=0x{:04X} UP=0x{:04X} transport={:?}",
+                reader_info.product_id, reader_info.usage_page, reader_info.transport
+            );
+
+            let reader = match mac_hid::MacHidEnumerator::open(&reader_info) {
+                Ok(dev) => dev,
+                Err(e) => {
+                    warn!("[HidGesture] Hybrid: can't open IOKit reader: {e}");
+                    continue;
+                }
+            };
+
+            // Step 3: Combine into Hybrid wrapper and try setup
+            self.reset_feature_state();
+            self.dev = Some(HidDeviceWrapper::Hybrid { writer, reader });
+            info!(
+                "[HidGesture] Hybrid: opened writer(hidapi UP=0x{:04X}) + reader(IOKit UP=0x{:04X}) for PID=0x{:04X}",
+                info.usage_page, reader_info.usage_page, info.product_id
+            );
+
+            if self.try_setup_device(info.product_id, &info.product_string) {
+                info!("[HidGesture] Hybrid connect SUCCESS for PID=0x{:04X}", info.product_id);
+                return true;
+            }
+
+            // Setup failed; drop and try next
+            if let Some(dev) = self.dev.take() {
+                drop(dev);
+            }
+        }
+
+        false
+    }
+
+    /// Connect using the native macOS IOKit backend.
+    ///
+    /// Tries multiple strategies:
+    /// 1. Standard enumerate (USB / Bolt receiver — usage_page >= 0xFF00)
+    /// 2. BLE direct open via `open_ble()` which KEEPS the IOHIDManager alive.
+    ///    On macOS BLE, the manager must stay alive for the device ref to work.
+    #[cfg(target_os = "macos")]
+    fn try_connect_native(&mut self) -> bool {
+        // Strategy 1: standard enumerate (USB / Bolt receiver)
+        let infos = mac_hid::MacHidEnumerator::enumerate(LOGITECH_VID, HIDPP_USAGE_PAGE);
+        if !infos.is_empty() {
+            info!("[HidGesture] Native IOKit candidates: {}", infos.len());
+            for info in &infos {
+                info!(
+                    "[HidGesture] Native candidate PID=0x{:04X} UP=0x{:04X} usage=0x{:04X} product={}",
+                    info.product_id, info.usage_page, info.usage, info.product_string
+                );
+                self.reset_feature_state();
+                match mac_hid::MacHidEnumerator::open(info) {
+                    Ok(dev) => {
+                        self.dev = Some(HidDeviceWrapper::Native(dev));
+                        info!("[HidGesture] Native opened PID=0x{:04X}", info.product_id);
+                    }
+                    Err(e) => {
+                        warn!("[HidGesture] Native can't open PID=0x{:04X}: {e}", info.product_id);
+                        continue;
+                    }
+                }
+                if self.try_setup_device(info.product_id, &info.product_string) {
+                    return true;
+                }
+                if let Some(dev) = self.dev.take() { drop(dev); }
+            }
+        }
+
+        // Strategy 2: BLE direct open — uses open_ble() which creates a
+        // FRESH IOHIDManager with VendorID+ProductID+Transport matching
+        // and KEEPS the manager alive for the device lifetime.
+        // This mirrors Python's _MacNativeHidDevice.open() approach.
+        debug!("[HidGesture] Native: no USB/Bolt HID++ devices, trying BLE open_ble...");
+        let ble_infos = mac_hid::MacHidEnumerator::enumerate_ble(LOGITECH_VID);
+        for info in &ble_infos {
+            info!(
+                "[HidGesture] Native BLE candidate PID=0x{:04X} product={}",
+                info.product_id, info.product_string
+            );
+            self.reset_feature_state();
+            match mac_hid::MacNativeHidDevice::open_ble(LOGITECH_VID, info.product_id) {
+                Ok(dev) => {
+                    info!("[HidGesture] Native BLE opened PID=0x{:04X} (manager kept alive)", info.product_id);
+                    self.dev = Some(HidDeviceWrapper::Native(dev));
+                }
+                Err(e) => {
+                    warn!("[HidGesture] Native BLE can't open PID=0x{:04X}: {e}", info.product_id);
+                    continue;
+                }
+            }
+            if self.try_setup_device(info.product_id, &info.product_string) {
+                return true;
+            }
+            if let Some(dev) = self.dev.take() {
+                drop(dev);
+            }
+        }
+        false
+    }
+
+    /// Connect using the hidapi crate backend.
+    fn try_connect_hidapi(&mut self) -> bool {
         let infos = vendor_hid_infos();
         if infos.is_empty() {
             return false;
@@ -883,15 +1137,7 @@ impl Worker {
                 info.product_id, info.usage_page, info.usage, info.product_string
             );
 
-            // Reset feature indices for this attempt
-            self.feat_idx = None;
-            self.dpi_idx = None;
-            self.smart_shift_idx = None;
-            self.battery_idx = None;
-            self.battery_is_unified = false;
-            self.gesture_cid = DEFAULT_GESTURE_CIDS[0];
-            self.gesture_candidates = DEFAULT_GESTURE_CIDS.to_vec();
-            self.rawxy_enabled = false;
+            self.reset_feature_state();
 
             let path = match std::ffi::CString::new(info.path.clone()) {
                 Ok(p) => p,
@@ -903,7 +1149,7 @@ impl Worker {
 
             match api.open_path(&path) {
                 Ok(dev) => {
-                    self.dev = Some(dev);
+                    self.dev = Some(HidDeviceWrapper::Hidapi(dev));
                     info!("[HidGesture] Opened PID=0x{:04X}", info.product_id);
                 }
                 Err(e) => {
@@ -912,74 +1158,7 @@ impl Worker {
                 }
             }
 
-            // Try BT direct (0xFF) and then Bolt receiver slots 1-6
-            let mut found_reprog = false;
-            for &idx in &[0xFFu8, 1, 2, 3, 4, 5, 6] {
-                self.dev_idx = idx;
-                if let Some(fi) = self.find_feature(FEAT_REPROG_V4) {
-                    self.feat_idx = Some(fi);
-                    info!(
-                        "[HidGesture] Found REPROG_V4 @0x{fi:02X} PID=0x{:04X} devIdx=0x{idx:02X}",
-                        info.product_id
-                    );
-
-                    let controls = self.discover_reprog_controls();
-                    self.gesture_candidates = self.choose_gesture_candidates(&controls);
-                    info!(
-                        "[HidGesture] Gesture CID candidates: {}",
-                        self.gesture_candidates.iter().map(|&c| format_cid(c)).collect::<Vec<_>>().join(", ")
-                    );
-
-                    // ADJUST_DPI
-                    if let Some(dpi_fi) = self.find_feature(FEAT_ADJ_DPI) {
-                        self.dpi_idx = Some(dpi_fi);
-                        info!("[HidGesture] Found ADJUST_DPI @0x{dpi_fi:02X}");
-                    }
-                    // SMART_SHIFT
-                    if let Some(ss_fi) = self.find_feature(FEAT_SMART_SHIFT) {
-                        self.smart_shift_idx = Some(ss_fi);
-                        info!("[HidGesture] Found SMART_SHIFT @0x{ss_fi:02X}");
-                    }
-                    // Battery: prefer UNIFIED_BATT, fall back to BATTERY_STATUS
-                    if let Some(bfi) = self.find_feature(FEAT_UNIFIED_BATT) {
-                        self.battery_idx = Some(bfi);
-                        self.battery_is_unified = true;
-                        info!("[HidGesture] Found UNIFIED_BATT @0x{bfi:02X}");
-                    } else if let Some(bfi) = self.find_feature(FEAT_BATTERY_STATUS) {
-                        self.battery_idx = Some(bfi);
-                        self.battery_is_unified = false;
-                        info!("[HidGesture] Found BATTERY_STATUS @0x{bfi:02X}");
-                    }
-
-                    if self.divert() {
-                        self.divert_mode_shift();
-                        found_reprog = true;
-                        break;
-                    }
-                    // Right device but divert failed — no point trying other slots
-                    break;
-                }
-            }
-
-            if found_reprog {
-                let desc = format!(
-                    "PID=0x{:04X} product=\"{}\" devIdx=0x{:02X}",
-                    info.product_id, info.product_string, self.dev_idx
-                );
-                info!("[HidGesture] Connected: {desc}");
-                // Pass the friendly product name to the UI
-                let display_name = if info.product_string.is_empty() {
-                    format!("Logitech (0x{:04X})", info.product_id)
-                } else {
-                    info.product_string.clone()
-                };
-                if let Some(cb) = &self.callbacks.on_device_connected {
-                    cb(display_name);
-                }
-
-                // Read battery and DPI on connect
-                self.apply_read_battery();
-                self.apply_read_dpi();
+            if self.try_setup_device(info.product_id, &info.product_string) {
                 return true;
             }
 
@@ -988,6 +1167,93 @@ impl Worker {
                 drop(dev);
             }
         }
+        false
+    }
+
+    /// Reset all feature state before trying a new device.
+    fn reset_feature_state(&mut self) {
+        self.feat_idx = None;
+        self.dpi_idx = None;
+        self.smart_shift_idx = None;
+        self.battery_idx = None;
+        self.battery_is_unified = false;
+        self.gesture_cid = DEFAULT_GESTURE_CIDS[0];
+        self.gesture_candidates = DEFAULT_GESTURE_CIDS.to_vec();
+        self.rawxy_enabled = false;
+    }
+
+    /// After opening a device, probe for HID++ features, divert the gesture
+    /// button, and fire the connected callback.  Returns true on success.
+    fn try_setup_device(&mut self, product_id: u16, product_string: &str) -> bool {
+        // Try BT direct (0xFF) and then Bolt receiver slots 1-6
+        let mut found_reprog = false;
+        for &idx in &[0xFFu8, 1, 2, 3, 4, 5, 6] {
+            self.dev_idx = idx;
+            if let Some(fi) = self.find_feature(FEAT_REPROG_V4) {
+                self.feat_idx = Some(fi);
+                info!(
+                    "[HidGesture] Found REPROG_V4 @0x{fi:02X} PID=0x{product_id:04X} devIdx=0x{idx:02X}",
+                );
+
+                let controls = self.discover_reprog_controls();
+                self.gesture_candidates = self.choose_gesture_candidates(&controls);
+                info!(
+                    "[HidGesture] Gesture CID candidates: {}",
+                    self.gesture_candidates.iter().map(|&c| format_cid(c)).collect::<Vec<_>>().join(", ")
+                );
+
+                // ADJUST_DPI
+                if let Some(dpi_fi) = self.find_feature(FEAT_ADJ_DPI) {
+                    self.dpi_idx = Some(dpi_fi);
+                    info!("[HidGesture] Found ADJUST_DPI @0x{dpi_fi:02X}");
+                }
+                // SMART_SHIFT
+                if let Some(ss_fi) = self.find_feature(FEAT_SMART_SHIFT) {
+                    self.smart_shift_idx = Some(ss_fi);
+                    info!("[HidGesture] Found SMART_SHIFT @0x{ss_fi:02X}");
+                }
+                // Battery: prefer UNIFIED_BATT, fall back to BATTERY_STATUS
+                if let Some(bfi) = self.find_feature(FEAT_UNIFIED_BATT) {
+                    self.battery_idx = Some(bfi);
+                    self.battery_is_unified = true;
+                    info!("[HidGesture] Found UNIFIED_BATT @0x{bfi:02X}");
+                } else if let Some(bfi) = self.find_feature(FEAT_BATTERY_STATUS) {
+                    self.battery_idx = Some(bfi);
+                    self.battery_is_unified = false;
+                    info!("[HidGesture] Found BATTERY_STATUS @0x{bfi:02X}");
+                }
+
+                if self.divert() {
+                    self.divert_mode_shift();
+                    found_reprog = true;
+                    break;
+                }
+                // Right device but divert failed -- no point trying other slots
+                break;
+            }
+        }
+
+        if found_reprog {
+            let desc = format!(
+                "PID=0x{product_id:04X} product=\"{product_string}\" devIdx=0x{:02X}",
+                self.dev_idx
+            );
+            info!("[HidGesture] Connected: {desc}");
+            let display_name = if product_string.is_empty() {
+                format!("Logitech (0x{product_id:04X})")
+            } else {
+                product_string.to_string()
+            };
+            if let Some(cb) = &self.callbacks.on_device_connected {
+                cb(display_name);
+            }
+
+            // Read battery and DPI on connect
+            self.apply_read_battery();
+            self.apply_read_dpi();
+            return true;
+        }
+
         false
     }
 
@@ -1037,12 +1303,24 @@ impl Worker {
 
                 let raw = match self.rx(1000) {
                     Some(r) => r,
-                    None => continue,
+                    None => {
+                        // Uncomment for deep debugging:
+                        // debug!("[HidGesture] rx(1000) returned None (timeout)");
+                        continue;
+                    }
                 };
 
                 // Detect disconnect: hidapi typically returns 0 bytes or an error
                 if raw.is_empty() {
                     break true;
+                }
+                // Debug: log raw reports to help diagnose gesture issues
+                if raw.len() >= 4 {
+                    debug!(
+                        "[HidGesture] RAW report ({} bytes): {:02X?}",
+                        raw.len(),
+                        &raw[..std::cmp::min(raw.len(), 20)]
+                    );
                 }
                 self.on_report(&raw);
             };

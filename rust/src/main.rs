@@ -34,6 +34,7 @@ fn parse_args() -> (HidBackend, bool, bool) {
                 let val = &s["--hid-backend=".len()..];
                 hid_backend = match val {
                     "hidapi" => HidBackend::Hidapi,
+                    "iokit" => HidBackend::IOKit,
                     _ => HidBackend::Auto,
                 };
             }
@@ -55,11 +56,21 @@ fn main() {
         }
     };
 
+    // ---- Load config (before logging, so debug_mode is available) ----
+    let cfg = match config::load_config() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Failed to load config: {e}");
+            config::Config::default()
+        }
+    };
+
     // ---- Logging ----
-    if let Err(e) = logging::setup_logging(debug) {
+    let effective_debug = debug || cfg.settings.debug_mode;
+    if let Err(e) = logging::setup_logging(effective_debug) {
         eprintln!("Failed to setup logging: {e}");
     }
-    log::info!("Mouser v{} starting", env!("CARGO_PKG_VERSION"));
+    log::info!("Mouser v{} starting (debug={})", env!("CARGO_PKG_VERSION"), effective_debug);
 
     // ---- macOS accessibility check ----
     #[cfg(target_os = "macos")]
@@ -69,15 +80,6 @@ fn main() {
             accessibility::request_accessibility();
         }
     }
-
-    // ---- Load config ----
-    let cfg = match config::load_config() {
-        Ok(c) => c,
-        Err(e) => {
-            log::error!("Failed to load config: {e}");
-            config::Config::default()
-        }
-    };
 
     let start_minimized = cfg.settings.start_minimized || start_hidden;
 
@@ -237,7 +239,10 @@ fn main() {
     }
 
     // ---- Main thread: eframe drives the native event loop ----
-    // This is required on macOS for tray-icon to receive menu events.
+    // eframe runs once for the lifetime of the process.  The settings window
+    // hides on close and re-shows when the tray "Settings" item is clicked.
+    // When hidden, rendering is skipped entirely (1-second repaint timer
+    // just to poll tray events), so CPU/GPU usage is near zero.
     log::info!("Mouser ready (start_minimized={})", start_minimized);
 
     let app = MainApp::new(
