@@ -1,0 +1,79 @@
+name: Rust CI
+
+on:
+  push:
+    branches: ["master", "main"]
+  pull_request:
+    branches: ["master", "main"]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('rust/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Install Linux system deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libhidapi-dev \
+            libevdev-dev \
+            libudev-dev \
+            libx11-dev \
+            libxcb1-dev \
+            libxcb-render0-dev \
+            libxcb-shape0-dev \
+            libxcb-xfixes0-dev \
+            libxkbcommon-dev \
+            libwayland-dev \
+            libglib2.0-dev \
+            libgtk-3-dev \
+            libatk1.0-dev \
+            libgdk-pixbuf2.0-dev \
+            libpango1.0-dev \
+            libgl1-mesa-dev
+
+      - name: Install macOS system deps
+        if: runner.os == 'macOS'
+        run: |
+          brew install hidapi
+
+      - name: Run tests
+        working-directory: rust
+        run: cargo test --verbose
+
+      - name: Check release build
+        working-directory: rust
+        run: cargo build --release
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mouser-${{ matrix.os }}
+          path: |
+            rust/target/release/mouser
+            rust/target/release/mouser.exe
+          if-no-files-found: ignore

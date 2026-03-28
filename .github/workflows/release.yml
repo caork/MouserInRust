@@ -9,6 +9,8 @@ permissions:
   contents: write
 
 jobs:
+  # ── Python builds (unchanged) ─────────────────────────────────────────────
+
   build-windows:
     runs-on: windows-latest
     steps:
@@ -83,9 +85,125 @@ jobs:
           name: Mouser-Linux
           path: Mouser-Linux.zip
 
+  # ── Rust builds ───────────────────────────────────────────────────────────
+
+  build-rust-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust/target
+          key: windows-cargo-${{ hashFiles('rust/Cargo.lock') }}
+      - name: Build release
+        working-directory: rust
+        run: cargo build --release
+      - name: Package
+        run: |
+          New-Item -ItemType Directory -Force dist-rust
+          Copy-Item rust\target\release\mouser.exe dist-rust\
+          Compress-Archive -Path dist-rust\mouser.exe -DestinationPath Mouser-Rust-Windows.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Mouser-Rust-Windows
+          path: Mouser-Rust-Windows.zip
+
+  build-rust-macos:
+    runs-on: macos-latest
+    strategy:
+      matrix:
+        target: [x86_64-apple-darwin, aarch64-apple-darwin]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust/target
+          key: macos-${{ matrix.target }}-cargo-${{ hashFiles('rust/Cargo.lock') }}
+      - name: Install deps
+        run: brew install hidapi
+      - name: Build release
+        working-directory: rust
+        run: cargo build --release --target ${{ matrix.target }}
+      - name: Create .app bundle
+        run: |
+          APP=Mouser-Rust.app
+          mkdir -p "$APP/Contents/MacOS"
+          mkdir -p "$APP/Contents/Resources"
+          cp rust/target/${{ matrix.target }}/release/mouser "$APP/Contents/MacOS/mouser"
+          cat > "$APP/Contents/Info.plist" << 'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>CFBundleExecutable</key><string>mouser</string>
+            <key>CFBundleIdentifier</key><string>io.github.tombadash.mouser-rust</string>
+            <key>CFBundleName</key><string>Mouser</string>
+            <key>CFBundleVersion</key><string>0.1.0</string>
+            <key>LSUIElement</key><true/>
+            <key>NSHighResolutionCapable</key><true/>
+          </dict></plist>
+          PLIST
+          codesign --force --deep --sign - "$APP"
+          zip -r -y "Mouser-Rust-macOS-${{ matrix.target }}.zip" "$APP"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Mouser-Rust-macOS-${{ matrix.target }}
+          path: Mouser-Rust-macOS-${{ matrix.target }}.zip
+
+  build-rust-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust/target
+          key: linux-cargo-${{ hashFiles('rust/Cargo.lock') }}
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libhidapi-dev libevdev-dev libudev-dev \
+            libx11-dev libxcb1-dev libxcb-render0-dev \
+            libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev \
+            libwayland-dev libglib2.0-dev libgtk-3-dev \
+            libatk1.0-dev libgdk-pixbuf2.0-dev libpango1.0-dev \
+            libgl1-mesa-dev
+      - name: Build release
+        working-directory: rust
+        run: cargo build --release
+      - name: Strip and package
+        run: |
+          strip rust/target/release/mouser
+          zip Mouser-Rust-Linux.zip rust/target/release/mouser
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Mouser-Rust-Linux
+          path: Mouser-Rust-Linux.zip
+
+  # ── GitHub Release ────────────────────────────────────────────────────────
+
   release:
     if: startsWith(github.ref, 'refs/tags/')
-    needs: [build-windows, build-macos, build-linux]
+    needs:
+      - build-windows
+      - build-macos
+      - build-linux
+      - build-rust-windows
+      - build-rust-macos
+      - build-rust-linux
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -100,4 +218,8 @@ jobs:
             --generate-notes \
             Mouser-Windows/Mouser-Windows.zip \
             Mouser-macOS/Mouser-macOS.zip \
-            Mouser-Linux/Mouser-Linux.zip
+            Mouser-Linux/Mouser-Linux.zip \
+            Mouser-Rust-Windows/Mouser-Rust-Windows.zip \
+            "Mouser-Rust-macOS-x86_64-apple-darwin/Mouser-Rust-macOS-x86_64-apple-darwin.zip" \
+            "Mouser-Rust-macOS-aarch64-apple-darwin/Mouser-Rust-macOS-aarch64-apple-darwin.zip" \
+            Mouser-Rust-Linux/Mouser-Rust-Linux.zip
