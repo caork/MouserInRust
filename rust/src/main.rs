@@ -19,7 +19,7 @@ use std::sync::{Arc, Mutex};
 
 use engine::{Engine, EngineConfig};
 use hid_gesture::HidBackend;
-use ui::{SettingsApp, TrayManager, UiMessage, UiState};
+use ui::{MainApp, TrayManager, UiMessage, UiState};
 
 fn parse_args() -> (HidBackend, bool, bool) {
     let mut hid_backend = HidBackend::Auto;
@@ -100,9 +100,8 @@ fn main() {
     };
     let mut engine = Engine::new(cfg, engine_cfg);
 
-    // Wire HID callbacks into UI state
+    // Wire debug callbacks
     {
-        let state = ui_state.clone();
         engine.set_debug_callback(Box::new(move |msg| {
             log::debug!("[event] {msg}");
         }));
@@ -121,15 +120,16 @@ fn main() {
 
     // ---- Tray ----
     let initial_state = ui_state.lock().unwrap().clone();
-    let tray = TrayManager::new(tx.clone(), &initial_state);
+    let tray = TrayManager::new(tx.clone(), &initial_state).ok();
+    if tray.is_none() {
+        log::warn!("System tray failed to initialise — running without tray");
+    }
 
     // ---- Engine message loop (background thread) ----
-    // Capture config Arc before engine is moved into background thread.
     let cfg_for_ui = engine.get_config();
     {
         let mut eng = engine;
         let state = ui_state.clone();
-        // Capture the Arc<Mutex<Config>> once so closures don't borrow temporaries.
         let cfg_arc = cfg_for_ui.clone();
         std::thread::spawn(move || {
             while let Ok(msg) = rx.recv() {
@@ -229,84 +229,39 @@ fn main() {
                         }
                     }
                     UiMessage::ShowSettings | UiMessage::HideSettings => {
-                        // handled in main thread via tray
+                        // handled in main thread via eframe/tray
                     }
                 }
             }
         });
     }
 
-    // ---- Main thread: tray event loop + settings window ----
+    // ---- Main thread: eframe drives the native event loop ----
+    // This is required on macOS for tray-icon to receive menu events.
     log::info!("Mouser ready (start_minimized={})", start_minimized);
 
-    match tray {
-        Ok(tray_mgr) => {
-            run_event_loop(tray_mgr, tx, ui_state, cfg_for_ui, start_minimized);
-        }
-        Err(e) => {
-            log::warn!("Tray failed to initialise ({e}), running headless");
-            // Headless: just block main thread
-            loop {
-                std::thread::sleep(std::time::Duration::from_secs(60));
-            }
-        }
-    }
-}
+    let app = MainApp::new(
+        tx,
+        ui_state,
+        cfg_for_ui,
+        tray,
+        !start_minimized,
+    );
 
-fn run_event_loop(
-    tray: TrayManager,
-    tx: std::sync::mpsc::Sender<UiMessage>,
-    ui_state: Arc<Mutex<UiState>>,
-    config: Arc<Mutex<config::Config>>,
-    start_minimized: bool,
-) {
-    // On platforms that support egui/eframe, show settings window when requested
-    // The tray runs its own event polling; we drive it from this loop
+    let native_options = eframe::NativeOptions {
+        viewport: egui::ViewportBuilder::default()
+            .with_title("Mouser Settings")
+            .with_inner_size([900.0, 620.0])
+            .with_min_inner_size([780.0, 520.0])
+            .with_visible(!start_minimized),
+        ..Default::default()
+    };
 
-    let mut show_settings = !start_minimized;
-
-    loop {
-        // Poll tray events (non-blocking)
-        tray.poll_events();
-
-        // Update tray with current state
-        if let Ok(state) = ui_state.lock() {
-            let snapshot = state.clone();
-            tray.update(&snapshot);
-        }
-
-        // If settings window requested, open it
-        if show_settings {
-            show_settings = false;
-            open_settings_window(tx.clone(), ui_state.clone(), config.clone());
-        }
-
-        std::thread::sleep(std::time::Duration::from_millis(100));
-    }
-}
-
-fn open_settings_window(
-    tx: std::sync::mpsc::Sender<UiMessage>,
-    ui_state: Arc<Mutex<UiState>>,
-    config: Arc<Mutex<config::Config>>,
-) {
-    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))]
-    {
-        use eframe::NativeOptions;
-        let app = SettingsApp::new(tx, ui_state, config);
-        let opts = NativeOptions {
-            viewport: egui::ViewportBuilder::default()
-                .with_title("Mouser Settings")
-                .with_inner_size([900.0, 620.0])
-                .with_min_inner_size([780.0, 520.0]),
-            ..Default::default()
-        };
-        if let Err(e) = eframe::run_native("Mouser", opts, Box::new(|_cc| Ok(Box::new(app)))) {
-            log::error!("Settings window error: {e}");
-        }
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
-    {
-        log::warn!("Settings window not supported on this platform");
+    if let Err(e) = eframe::run_native(
+        "Mouser",
+        native_options,
+        Box::new(|_cc| Ok(Box::new(app))),
+    ) {
+        log::error!("UI error: {e}");
     }
 }

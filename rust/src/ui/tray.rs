@@ -1,6 +1,7 @@
 #[allow(dead_code)]
 
-use std::sync::mpsc::Sender;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, mpsc::Sender};
 
 use tray_icon::{
     TrayIcon, TrayIconBuilder,
@@ -19,6 +20,9 @@ pub struct TrayManager {
     settings_item: MenuItem,
     quit_item: MenuItem,
     tx: Sender<UiMessage>,
+    /// Set to `true` when the user clicks "Settings" in the tray.
+    /// `MainApp` reads and clears this flag every frame.
+    pub show_settings_flag: Arc<AtomicBool>,
 }
 
 impl TrayManager {
@@ -77,6 +81,7 @@ impl TrayManager {
             settings_item,
             quit_item,
             tx,
+            show_settings_flag: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -133,11 +138,10 @@ impl TrayManager {
         while let Ok(event) = MenuEvent::receiver().try_recv() {
             let id = event.id().clone();
             if id == toggle_id {
-                // Toggle is handled by engine reading UiState; we just signal ShowSettings
-                // For now send ShowSettings as a proxy — engine toggles enabled state
-                let _ = self.tx.send(UiMessage::ShowSettings);
+                // Open the settings window
+                self.show_settings_flag.store(true, Ordering::Relaxed);
             } else if id == settings_id {
-                let _ = self.tx.send(UiMessage::ShowSettings);
+                self.show_settings_flag.store(true, Ordering::Relaxed);
             } else if id == quit_id {
                 let _ = self.tx.send(UiMessage::Quit);
             }

@@ -6,6 +6,11 @@ mod settings_window;
 pub use tray::TrayManager;
 pub use settings_window::SettingsApp;
 
+use std::sync::{Arc, Mutex};
+use std::sync::mpsc::Sender;
+
+use crate::config::Config;
+
 /// Snapshot of engine state for display in the UI.
 #[derive(Clone)]
 pub struct UiState {
@@ -49,4 +54,69 @@ pub enum UiMessage {
     Quit,
     ShowSettings,
     HideSettings,
+}
+
+// ---------------------------------------------------------------------------
+// MainApp — wraps tray + settings into one eframe application.
+//
+// On macOS (and Windows), eframe drives the native event loop which is
+// required for tray-icon to deliver menu events.  The window starts hidden
+// when `start_minimized` is set; clicking "Settings" in the tray shows it.
+// ---------------------------------------------------------------------------
+
+pub struct MainApp {
+    tray: Option<TrayManager>,
+    settings: SettingsApp,
+    window_visible: bool,
+}
+
+impl MainApp {
+    pub fn new(
+        tx: Sender<UiMessage>,
+        ui_state: Arc<Mutex<UiState>>,
+        config: Arc<Mutex<Config>>,
+        tray: Option<TrayManager>,
+        start_visible: bool,
+    ) -> Self {
+        let settings = SettingsApp::new(tx, ui_state, config);
+        Self {
+            tray,
+            settings,
+            window_visible: start_visible,
+        }
+    }
+}
+
+impl eframe::App for MainApp {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Poll tray menu events every frame
+        if let Some(tray) = &self.tray {
+            tray.poll_events();
+
+            // Update tray text from current state
+            if let Ok(state) = self.settings.state.lock() {
+                tray.update(&state);
+            }
+
+            // Check if the tray's "Settings" button was clicked
+            if tray.show_settings_flag.swap(false, std::sync::atomic::Ordering::Relaxed) {
+                self.window_visible = true;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            }
+        }
+
+        if self.window_visible {
+            // Draw the full settings UI
+            self.settings.update_ui(ctx);
+        } else {
+            // Window is hidden — show nothing. Low-power repaint keeps
+            // the tray event polling alive.
+            ctx.request_repaint_after(std::time::Duration::from_millis(250));
+        }
+    }
+
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        let _ = self.settings.tx.send(UiMessage::Quit);
+    }
 }

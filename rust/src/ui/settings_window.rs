@@ -21,9 +21,9 @@ enum Tab {
 
 /// The egui application for the settings window.
 pub struct SettingsApp {
-    tx: Sender<UiMessage>,
-    state: Arc<Mutex<UiState>>,
-    config: Arc<Mutex<Config>>,
+    pub tx: Sender<UiMessage>,
+    pub state: Arc<Mutex<UiState>>,
+    pub config: Arc<Mutex<Config>>,
 
     // UI state
     active_tab: Tab,
@@ -441,8 +441,10 @@ impl SettingsApp {
     }
 }
 
-impl eframe::App for SettingsApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+impl SettingsApp {
+    /// Draw the full settings UI.  Called by `MainApp::update()` and by the
+    /// standalone `eframe::App` impl.
+    pub fn update_ui(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::top("status_bar").show(ctx, |ui| {
             self.draw_status_bar(ui);
         });
@@ -477,6 +479,12 @@ impl eframe::App for SettingsApp {
                 self.draw_settings_section(ui);
             });
         });
+    }
+}
+
+impl eframe::App for SettingsApp {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.update_ui(ctx);
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
