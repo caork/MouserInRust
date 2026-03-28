@@ -65,7 +65,7 @@ pub struct Profile {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Settings {
-    #[serde(default = "bool_true")]
+    #[serde(default)]
     pub start_minimized: bool,
     #[serde(default)]
     pub start_at_login: bool,
@@ -170,7 +170,7 @@ fn default_profiles() -> HashMap<String, Profile> {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            start_minimized: true,
+            start_minimized: false,
             start_at_login: false,
             hscroll_threshold: 1.0,
             invert_hscroll: false,
