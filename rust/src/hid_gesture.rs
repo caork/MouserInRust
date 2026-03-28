@@ -376,23 +376,47 @@ impl Worker {
             Some(d) => d,
             None => return false,
         };
-        let mut buf = [0u8; LONG_LEN + 1]; // +1 for report-id prefix required by hidapi
-        buf[0] = 0x00;                      // report-id 0 (hidapi prepends it on write)
-        buf[1] = LONG_REPORT_ID;
-        buf[2] = self.dev_idx;
-        buf[3] = feat;
-        buf[4] = ((func & 0x0F) << 4) | (MY_SW & 0x0F);
+
+        // On macOS (IOKit backend) the first byte of the write buffer is the
+        // HID report ID.  BLE HID++ devices only accept report IDs 0x10
+        // (short, 7 bytes) or 0x11 (long, 20 bytes).  Sending 0x00 causes
+        // IOHIDDeviceSetReport to fail with 0xE00002F0.
+        //
+        // We try long report first (0x11); if the device rejects it we fall
+        // back to a short report (0x10).
+        let mut buf = [0u8; LONG_LEN]; // 20 bytes: reportId + devIdx + feat + funcSw + 16 params
+        buf[0] = LONG_REPORT_ID;       // 0x11
+        buf[1] = self.dev_idx;
+        buf[2] = feat;
+        buf[3] = ((func & 0x0F) << 4) | (MY_SW & 0x0F);
         for (i, &b) in params.iter().enumerate() {
-            let pos = 5 + i;
+            let pos = 4 + i;
             if pos < buf.len() {
                 buf[pos] = b;
             }
         }
         match dev.write(&buf) {
             Ok(_) => true,
-            Err(e) => {
-                warn!("[HidGesture] write error: {e}");
-                false
+            Err(_) => {
+                // Fallback: try short report (0x10, 7 bytes)
+                let mut short = [0u8; SHORT_LEN]; // 7 bytes
+                short[0] = SHORT_REPORT_ID; // 0x10
+                short[1] = self.dev_idx;
+                short[2] = feat;
+                short[3] = ((func & 0x0F) << 4) | (MY_SW & 0x0F);
+                for (i, &b) in params.iter().enumerate() {
+                    let pos = 4 + i;
+                    if pos < short.len() {
+                        short[pos] = b;
+                    }
+                }
+                match dev.write(&short) {
+                    Ok(_) => true,
+                    Err(e) => {
+                        warn!("[HidGesture] write error: {e}");
+                        false
+                    }
+                }
             }
         }
     }
@@ -942,9 +966,20 @@ impl Worker {
                     "PID=0x{:04X} product=\"{}\" devIdx=0x{:02X}",
                     info.product_id, info.product_string, self.dev_idx
                 );
+                info!("[HidGesture] Connected: {desc}");
+                // Pass the friendly product name to the UI
+                let display_name = if info.product_string.is_empty() {
+                    format!("Logitech (0x{:04X})", info.product_id)
+                } else {
+                    info.product_string.clone()
+                };
                 if let Some(cb) = &self.callbacks.on_device_connected {
-                    cb(desc);
+                    cb(display_name);
                 }
+
+                // Read battery and DPI on connect
+                self.apply_read_battery();
+                self.apply_read_dpi();
                 return true;
             }
 
