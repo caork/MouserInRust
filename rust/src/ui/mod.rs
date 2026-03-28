@@ -106,12 +106,19 @@ impl eframe::App for MainApp {
             }
         }
 
-        if self.window_visible {
-            // Draw the full settings UI
-            self.settings.update_ui(ctx);
-        } else {
-            // Window is hidden — show nothing. Low-power repaint keeps
-            // the tray event polling alive.
+        // On the very first frame, hide the window if we started minimised.
+        // (with_visible(false) on macOS is unreliable.)
+        if !self.window_visible {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+        }
+
+        // Always draw the settings UI — if the window happens to be
+        // on-screen we must render content, otherwise egui shows a
+        // black rectangle.
+        self.settings.update_ui(ctx);
+
+        // Low-power repaint when hidden so tray events keep getting polled.
+        if !self.window_visible {
             ctx.request_repaint_after(std::time::Duration::from_millis(250));
         }
     }
