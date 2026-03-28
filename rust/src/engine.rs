@@ -86,9 +86,8 @@ pub trait MouseHookGestureInput {
     fn mode_shift_up(&mut self) {}
 }
 
-// Blanket: every type that implements `MouseHook` also gets the default no-op
-// `MouseHookGestureInput`.
-impl<T: crate::mouse_hook::MouseHook + ?Sized> MouseHookGestureInput for T {}
+// Default no-op implementation for any MouseHook that doesn't override it.
+// Platform hooks that have a GestureDetector should provide their own impl.
 
 // ---------------------------------------------------------------------------
 // Helper: button key → (MouseEventType, is_up_event) list

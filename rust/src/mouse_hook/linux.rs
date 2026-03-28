@@ -481,6 +481,8 @@ mod imp {
             log::info!("[MouseHook] Linux evdev hook stopped");
         }
     }
+
+    impl crate::engine::MouseHookGestureInput for LinuxMouseHook {}
 }
 
 // ---------------------------------------------------------------------------
@@ -516,6 +518,8 @@ mod imp {
         }
         fn stop(&mut self) {}
     }
+
+    impl crate::engine::MouseHookGestureInput for LinuxMouseHook {}
 }
 
 pub use imp::LinuxMouseHook;

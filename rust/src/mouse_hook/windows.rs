@@ -319,6 +319,8 @@ mod imp {
             }
         }
     }
+
+    impl crate::engine::MouseHookGestureInput for WindowsMouseHook {}
 } // mod imp
 
 // ---------------------------------------------------------------------------
@@ -354,6 +356,8 @@ mod imp {
         }
         fn stop(&mut self) {}
     }
+
+    impl crate::engine::MouseHookGestureInput for WindowsMouseHook {}
 }
 
 pub use imp::WindowsMouseHook;

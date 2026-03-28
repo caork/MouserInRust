@@ -391,7 +391,43 @@ mod imp {
             log::info!("[MouseHook] CGEventTap stopped");
         }
     }
-}
+
+    impl crate::engine::MouseHookGestureInput for MacosMouseHook {
+        fn gesture_button_down(&mut self) {
+            let state = get_tap_state();
+            let mut s = state.lock().unwrap();
+            s.gesture.on_button_down();
+        }
+
+        fn gesture_move(&mut self, dx: f64, dy: f64, source: &str) {
+            let state = get_tap_state();
+            let mut s = state.lock().unwrap();
+            if let Some(evt) = s.gesture.accumulate(dx, dy, source) {
+                s.callbacks.dispatch(evt, None);
+            }
+        }
+
+        fn gesture_button_up(&mut self) {
+            let state = get_tap_state();
+            let mut s = state.lock().unwrap();
+            if let Some(evt) = s.gesture.on_button_up() {
+                s.callbacks.dispatch(evt, None);
+            }
+        }
+
+        fn mode_shift_down(&mut self) {
+            let state = get_tap_state();
+            let s = state.lock().unwrap();
+            s.callbacks.dispatch(MouseEvent::ModeShiftDown, None);
+        }
+
+        fn mode_shift_up(&mut self) {
+            let state = get_tap_state();
+            let s = state.lock().unwrap();
+            s.callbacks.dispatch(MouseEvent::ModeShiftUp, None);
+        }
+    }
+} // end macOS mod imp
 
 // ---------------------------------------------------------------------------
 // Stub for non-macOS platforms
@@ -426,6 +462,8 @@ mod imp {
         }
         fn stop(&mut self) {}
     }
+
+    impl crate::engine::MouseHookGestureInput for MacosMouseHook {}
 }
 
 pub use imp::MacosMouseHook;

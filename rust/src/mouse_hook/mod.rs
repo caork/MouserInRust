@@ -417,7 +417,7 @@ impl Default for CallbackMap {
 // ---------------------------------------------------------------------------
 
 /// Platform-neutral interface for the low-level mouse hook.
-pub trait MouseHook: Send {
+pub trait MouseHook: Send + crate::engine::MouseHookGestureInput {
     /// Register a callback for a specific event type.
     fn register(
         &mut self,
