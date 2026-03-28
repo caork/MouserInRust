@@ -21,8 +21,9 @@ pub struct TrayManager {
     quit_item: MenuItem,
     tx: Sender<UiMessage>,
     /// Set to `true` when the user clicks "Settings" in the tray.
-    /// `MainApp` reads and clears this flag every frame.
     pub show_settings_flag: Arc<AtomicBool>,
+    /// Set to `true` when the user clicks "Quit" in the tray.
+    pub quit_flag: Arc<AtomicBool>,
 }
 
 impl TrayManager {
@@ -82,6 +83,7 @@ impl TrayManager {
             quit_item,
             tx,
             show_settings_flag: Arc::new(AtomicBool::new(false)),
+            quit_flag: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -143,6 +145,7 @@ impl TrayManager {
             } else if id == settings_id {
                 self.show_settings_flag.store(true, Ordering::Relaxed);
             } else if id == quit_id {
+                self.quit_flag.store(true, Ordering::Relaxed);
                 let _ = self.tx.send(UiMessage::Quit);
             }
         }

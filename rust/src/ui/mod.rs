@@ -59,9 +59,10 @@ pub enum UiMessage {
 // ---------------------------------------------------------------------------
 // MainApp — wraps tray + settings into one eframe application.
 //
-// On macOS (and Windows), eframe drives the native event loop which is
-// required for tray-icon to deliver menu events.  The window starts hidden
-// when `start_minimized` is set; clicking "Settings" in the tray shows it.
+// eframe drives the native event loop (required on macOS for tray-icon).
+// The window hides on close instead of exiting; clicking "Settings" in
+// the tray re-shows it.  When hidden, rendering is skipped entirely to
+// minimise CPU and GPU usage.
 // ---------------------------------------------------------------------------
 
 pub struct MainApp {
@@ -110,17 +111,21 @@ impl eframe::App for MainApp {
         // (with_visible(false) on macOS is unreliable.)
         if !self.window_visible {
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            // Slow repaint when hidden — just enough to poll tray events.
+            ctx.request_repaint_after(std::time::Duration::from_secs(1));
+            return;
         }
 
-        // Always draw the settings UI — if the window happens to be
-        // on-screen we must render content, otherwise egui shows a
-        // black rectangle.
+        // Intercept the close button: hide instead of quit.
+        if ctx.input(|i| i.viewport().close_requested()) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            self.window_visible = false;
+            return;
+        }
+
+        // Draw the settings UI only when the window is visible.
         self.settings.update_ui(ctx);
-
-        // Low-power repaint when hidden so tray events keep getting polled.
-        if !self.window_visible {
-            ctx.request_repaint_after(std::time::Duration::from_millis(250));
-        }
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {

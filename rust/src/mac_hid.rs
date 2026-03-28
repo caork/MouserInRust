@@ -320,17 +320,11 @@ impl MacHidEnumerator {
                         if pid == 0 {
                             continue;
                         }
-                        // Accept any Logitech device — on BLE, the 0xFF43 HID++
-                        // sub-interface may appear with any usage page.  We log
-                        // everything and let try_setup_device decide.
-                        // Prefer vendor-specific HID++ interfaces; also accept
-                        // BLE mouse interfaces as fallback.
-                        let is_ble = transport.as_deref()
-                            .map(|t| t.contains("Bluetooth") || t.contains("BLE"))
-                            .unwrap_or(false);
-                        let is_hidpp = up >= usage_page_min;
-                        let is_mouse = up == 0x0001;
-                        if !is_hidpp && !(is_ble && is_mouse) {
+                        // Only accept actual HID++ interfaces (UP >= 0xFF00).
+                        // BLE devices where HID++ is merged into UP=0x0001
+                        // must use open_ble() instead (which keeps the manager
+                        // alive — required for async report delivery).
+                        if pid == 0 || up < usage_page_min {
                             continue;
                         }
                         let key = (pid, up, usage, transport.clone().unwrap_or_default(), product.clone());
