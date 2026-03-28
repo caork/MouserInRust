@@ -161,9 +161,18 @@ pub struct GestureDetector {
     started_at: Option<Instant>,
     last_move_at: Option<Instant>,
     cooldown_until: Option<Instant>,
+
+    /// Direction confirmation: once the distance threshold is crossed,
+    /// we record a candidate direction and the time.  The swipe only
+    /// fires after `CONFIRM_MS` if the direction hasn't changed.
+    candidate_dir: Option<MouseEvent>,
+    candidate_since: Option<Instant>,
 }
 
 impl GestureDetector {
+    /// How long (ms) the candidate direction must remain stable before firing.
+    const CONFIRM_MS: u64 = 80;
+
     pub fn new(config: GestureConfig) -> Self {
         Self {
             config,
@@ -177,6 +186,8 @@ impl GestureDetector {
             started_at: None,
             last_move_at: None,
             cooldown_until: None,
+            candidate_dir: None,
+            candidate_since: None,
         }
     }
 
@@ -293,25 +304,44 @@ impl GestureDetector {
         self.delta_y += dy;
         self.last_move_at = Some(now);
 
-        log::debug!(
-            "[GestureDetector] segment source={source} accum_x={} accum_y={}",
-            self.delta_x,
-            self.delta_y
-        );
+        // Check if we've crossed the distance threshold
+        let dir = match self.classify_direction() {
+            Some(d) => d,
+            None => {
+                // Below threshold — reset candidate
+                self.candidate_dir = None;
+                self.candidate_since = None;
+                return None;
+            }
+        };
 
-        if let Some(event) = self.detect() {
-            self.triggered = true;
-            log::debug!(
-                "[GestureDetector] gesture detected {:?} dx={} dy={}",
-                event,
-                self.delta_x,
-                self.delta_y
-            );
-            self.cooldown_until = Some(
-                Instant::now() + Duration::from_millis(self.config.cooldown_ms as u64),
-            );
-            self.finish_tracking();
-            return Some(event);
+        // Direction confirmation: the candidate must stay stable for
+        // CONFIRM_MS before we fire.  If the direction changes, restart
+        // the confirmation timer.
+        match self.candidate_dir {
+            Some(prev) if prev == dir => {
+                // Same direction — check if confirmed
+                if let Some(since) = self.candidate_since {
+                    let held_ms = now.duration_since(since).as_millis() as u64;
+                    if held_ms >= Self::CONFIRM_MS {
+                        self.triggered = true;
+                        log::debug!(
+                            "[GestureDetector] confirmed {:?} dx={:.0} dy={:.0} after {}ms",
+                            dir, self.delta_x, self.delta_y, held_ms
+                        );
+                        self.cooldown_until = Some(
+                            Instant::now() + Duration::from_millis(self.config.cooldown_ms as u64),
+                        );
+                        self.finish_tracking();
+                        return Some(dir);
+                    }
+                }
+            }
+            _ => {
+                // New or changed direction — start confirmation timer
+                self.candidate_dir = Some(dir);
+                self.candidate_since = Some(now);
+            }
         }
         None
     }
@@ -341,9 +371,11 @@ impl GestureDetector {
         self.delta_x = 0.0;
         self.delta_y = 0.0;
         self.input_source = None;
+        self.candidate_dir = None;
+        self.candidate_since = None;
     }
 
-    /// Angle-based swipe direction detection using `atan2`.
+    /// Classify the current accumulated delta into a cardinal direction using `atan2`.
     ///
     /// This is the standard algorithm used by Android, iOS, and game engines.
     /// The circle is divided into four 90° cones centered on each cardinal
@@ -357,7 +389,7 @@ impl GestureDetector {
     ///          \     /
     ///           Down (90°)
     /// ```
-    fn detect(&self) -> Option<MouseEvent> {
+    fn classify_direction(&self) -> Option<MouseEvent> {
         let distance = (self.delta_x * self.delta_x + self.delta_y * self.delta_y).sqrt();
         if distance < self.config.threshold as f64 {
             return None;
