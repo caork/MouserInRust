@@ -343,40 +343,44 @@ impl GestureDetector {
         self.input_source = None;
     }
 
-    /// Pure geometry: given accumulated deltas, decide which swipe (if any) fired.
+    /// Angle-based swipe direction detection using `atan2`.
     ///
-    /// Uses a ratio-based approach: the dominant axis must be at least 1.5x
-    /// the cross axis to avoid ambiguous diagonals. This is more forgiving
-    /// than a fixed deadzone because it adapts to the gesture magnitude.
+    /// This is the standard algorithm used by Android, iOS, and game engines.
+    /// The circle is divided into four 90° cones centered on each cardinal
+    /// direction (±45° from axis). Every angle maps to exactly one direction
+    /// with no ambiguous zones.
+    ///
+    /// ```text
+    ///            Up (-90°)
+    ///          /     \
+    ///    Left ← ─ · ─ → Right (0°)
+    ///          \     /
+    ///           Down (90°)
+    /// ```
     fn detect(&self) -> Option<MouseEvent> {
-        let abs_x = self.delta_x.abs();
-        let abs_y = self.delta_y.abs();
-        let dominant = abs_x.max(abs_y);
-        let minor = abs_x.min(abs_y);
-
-        if dominant < self.config.threshold as f64 {
+        let distance = (self.delta_x * self.delta_x + self.delta_y * self.delta_y).sqrt();
+        if distance < self.config.threshold as f64 {
             return None;
         }
 
-        // The dominant axis must be at least 1.5x the minor axis.
-        // This rejects diagonals while allowing slightly imprecise swipes.
-        let ratio = if minor > 0.1 { dominant / minor } else { 100.0 };
-        if ratio < 1.5 {
-            return None; // too diagonal — wait for more data
-        }
+        // atan2 returns radians: 0=right, π/2=down, ±π=left, -π/2=up
+        let angle = self.delta_y.atan2(self.delta_x);
 
-        if abs_x > abs_y {
-            return Some(if self.delta_x > 0.0 {
-                MouseEvent::GestureSwipeRight
-            } else {
-                MouseEvent::GestureSwipeLeft
-            });
-        }
+        // Each direction gets a 90° (π/2) cone:
+        //   Right:  -π/4  to  π/4
+        //   Down:    π/4  to  3π/4
+        //   Left:   3π/4  to  π  and  -π  to -3π/4
+        //   Up:    -3π/4  to -π/4
+        let pi_4 = std::f64::consts::FRAC_PI_4;
 
-        Some(if self.delta_y > 0.0 {
+        Some(if angle >= -pi_4 && angle < pi_4 {
+            MouseEvent::GestureSwipeRight
+        } else if angle >= pi_4 && angle < 3.0 * pi_4 {
             MouseEvent::GestureSwipeDown
-        } else {
+        } else if angle >= -3.0 * pi_4 && angle < -pi_4 {
             MouseEvent::GestureSwipeUp
+        } else {
+            MouseEvent::GestureSwipeLeft
         })
     }
 }
