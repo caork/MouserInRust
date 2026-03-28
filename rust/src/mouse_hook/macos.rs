@@ -328,7 +328,9 @@ mod imp {
         }
 
         fn configure_gestures(&mut self, config: GestureConfig) {
-            get_tap_state().lock().unwrap().gesture.configure(config);
+            let mut state = get_tap_state().lock().unwrap();
+            state.gesture.configure(config);
+            state.gesture.set_enabled(true);
         }
 
         fn set_connection_change_callback(&mut self, cb: Box<dyn Fn(bool) + Send + 'static>) {
