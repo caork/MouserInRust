@@ -95,13 +95,13 @@ fn button_label(key: &str) -> &str {
         "gesture"        => "Gesture Button",
         "xbutton1"       => "Back Button",
         "xbutton2"       => "Forward Button",
-        "gesture_left"   => "Gesture \u{2190}",
-        "gesture_right"  => "Gesture \u{2192}",
-        "gesture_up"     => "Gesture \u{2191}",
-        "gesture_down"   => "Gesture \u{2193}",
+        "gesture_left"   => "Gesture Left",
+        "gesture_right"  => "Gesture Right",
+        "gesture_up"     => "Gesture Up",
+        "gesture_down"   => "Gesture Down",
         "mode_shift"     => "Mode Shift",
-        "hscroll_left"   => "H-Scroll \u{2190}",
-        "hscroll_right"  => "H-Scroll \u{2192}",
+        "hscroll_left"   => "H-Scroll Left",
+        "hscroll_right"  => "H-Scroll Right",
         _                => key,
     }
 }
@@ -272,8 +272,8 @@ impl SettingsApp {
 
             // Navigation items
             let nav_items = [
-                (Tab::MouseProfiles, "\u{1F5B1}", "Mouse"),
-                (Tab::PointerScroll, "\u{2699}", "Settings"),
+                (Tab::MouseProfiles, "M", "Mouse"),
+                (Tab::PointerScroll, "S", "Settings"),
             ];
 
             for (tab, icon, label) in nav_items {
