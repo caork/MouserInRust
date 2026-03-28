@@ -344,20 +344,28 @@ impl GestureDetector {
     }
 
     /// Pure geometry: given accumulated deltas, decide which swipe (if any) fired.
+    ///
+    /// Uses a ratio-based approach: the dominant axis must be at least 1.5x
+    /// the cross axis to avoid ambiguous diagonals. This is more forgiving
+    /// than a fixed deadzone because it adapts to the gesture magnitude.
     fn detect(&self) -> Option<MouseEvent> {
         let abs_x = self.delta_x.abs();
         let abs_y = self.delta_y.abs();
         let dominant = abs_x.max(abs_y);
+        let minor = abs_x.min(abs_y);
+
         if dominant < self.config.threshold as f64 {
             return None;
         }
 
-        let cross_limit = (self.config.deadzone as f64).max(dominant * 0.35);
+        // The dominant axis must be at least 1.5x the minor axis.
+        // This rejects diagonals while allowing slightly imprecise swipes.
+        let ratio = if minor > 0.1 { dominant / minor } else { 100.0 };
+        if ratio < 1.5 {
+            return None; // too diagonal — wait for more data
+        }
 
         if abs_x > abs_y {
-            if abs_y > cross_limit {
-                return None; // diagonal — ambiguous
-            }
             return Some(if self.delta_x > 0.0 {
                 MouseEvent::GestureSwipeRight
             } else {
@@ -365,9 +373,6 @@ impl GestureDetector {
             });
         }
 
-        if abs_x > cross_limit {
-            return None; // diagonal — ambiguous
-        }
         Some(if self.delta_y > 0.0 {
             MouseEvent::GestureSwipeDown
         } else {
