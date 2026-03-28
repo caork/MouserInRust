@@ -98,7 +98,7 @@ fn main() {
         hid_backend,
         debug,
     };
-    let mut engine = Engine::new(cfg, engine_cfg);
+    let mut engine = Engine::new(cfg, engine_cfg, Some(ui_state.clone()));
 
     // Wire debug callbacks
     {

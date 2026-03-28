@@ -227,7 +227,11 @@ impl Engine {
     /// Wires all callback chains and performs initial hook registration but
     /// does **not** start background threads.  Call [`Engine::start`] after
     /// registering any UI callbacks.
-    pub fn new(cfg: Config, engine_config: EngineConfig) -> Self {
+    pub fn new(
+        cfg: Config,
+        engine_config: EngineConfig,
+        ui_state: Option<Arc<Mutex<crate::ui::UiState>>>,
+    ) -> Self {
         let debug_enabled = Arc::new(AtomicBool::new(
             cfg.settings.debug_mode || engine_config.debug,
         ));
@@ -237,6 +241,9 @@ impl Engine {
         let hscroll_state = Arc::new(Mutex::new((HScrollState::new(), HScrollState::new())));
         let debug_cb: DebugCb = Arc::new(Mutex::new(None));
         let gesture_cb: GestureCb = Arc::new(Mutex::new(None));
+        let ui_state_ref = ui_state.unwrap_or_else(|| {
+            Arc::new(Mutex::new(crate::ui::UiState::default()))
+        });
 
         // The hook lives in a shared Arc so background closures can reach it.
         let hook_holder: HookHolder = Arc::new(Mutex::new(None));
@@ -302,18 +309,45 @@ impl Engine {
                         emit_debug(&dbg3, format!("HID: gesture move dx={dx} dy={dy}"));
                     }
                 })),
-                on_device_connected: Some(Box::new(move |info: String| {
-                    if de4.load(Ordering::Relaxed) {
-                        emit_debug(&dbg4, format!("HID: device connected {info}"));
-                    }
-                })),
-                on_device_disconnected: Some(Box::new(move || {
-                    if de5.load(Ordering::Relaxed) {
-                        emit_debug(&dbg5, "HID: device disconnected".into());
-                    }
-                })),
-                on_battery: None,
-                on_dpi_changed: None,
+                on_device_connected: {
+                    let st = Arc::clone(&ui_state_ref);
+                    Some(Box::new(move |info: String| {
+                        if let Ok(mut s) = st.lock() {
+                            s.device_name = info.clone();
+                        }
+                        if de4.load(Ordering::Relaxed) {
+                            emit_debug(&dbg4, format!("HID: device connected {info}"));
+                        }
+                    }))
+                },
+                on_device_disconnected: {
+                    let st = Arc::clone(&ui_state_ref);
+                    Some(Box::new(move || {
+                        if let Ok(mut s) = st.lock() {
+                            s.device_name = "No device".into();
+                            s.battery_pct = None;
+                        }
+                        if de5.load(Ordering::Relaxed) {
+                            emit_debug(&dbg5, "HID: device disconnected".into());
+                        }
+                    }))
+                },
+                on_battery: {
+                    let st = Arc::clone(&ui_state_ref);
+                    Some(Box::new(move |pct: u8| {
+                        if let Ok(mut s) = st.lock() {
+                            s.battery_pct = Some(pct);
+                        }
+                    }))
+                },
+                on_dpi_changed: {
+                    let st = Arc::clone(&ui_state_ref);
+                    Some(Box::new(move |dpi: u16| {
+                        if let Ok(mut s) = st.lock() {
+                            s.dpi = dpi as u32;
+                        }
+                    }))
+                },
                 on_mode_shift_down: Some(Box::new(move || {
                     let mut g = h_ms_down.lock().unwrap();
                     if let Some(h) = g.as_mut() {
