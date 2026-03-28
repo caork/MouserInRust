@@ -105,12 +105,10 @@ fn button_to_event_types(button: &str) -> &'static [(MouseEventType, bool)] {
             (MouseEventType::MiddleUp, true),
         ],
         // "gesture" covers tap + all four swipe directions.
+        // "gesture" = tap only. Swipe directions are handled by
+        // "gesture_left", "gesture_right", "gesture_up", "gesture_down".
         "gesture" => &[
             (MouseEventType::GestureClick, false),
-            (MouseEventType::GestureSwipeLeft, false),
-            (MouseEventType::GestureSwipeRight, false),
-            (MouseEventType::GestureSwipeUp, false),
-            (MouseEventType::GestureSwipeDown, false),
         ],
         "gesture_left" => &[(MouseEventType::GestureSwipeLeft, false)],
         "gesture_right" => &[(MouseEventType::GestureSwipeRight, false)],

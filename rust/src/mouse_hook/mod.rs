@@ -241,7 +241,9 @@ impl GestureDetector {
     ///
     /// Returns `Some(event)` when a swipe threshold is crossed.
     pub fn accumulate(&mut self, dx: f64, dy: f64, source: &str) -> Option<MouseEvent> {
-        if !self.enabled || !self.active {
+        if !self.enabled || !self.active || self.triggered {
+            // Once a swipe has been triggered, ignore further movement
+            // until the button is released.
             return None;
         }
         if self.cooldown_active() {
