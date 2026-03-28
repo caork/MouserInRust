@@ -119,6 +119,16 @@ fn action_label(action_id: &str) -> String {
     action_id.to_string()
 }
 
+/// ASCII-safe display name for each language code (avoids CJK font issues).
+fn language_display_name(code: &str) -> &'static str {
+    match code {
+        "en"    => "English",
+        "zh_CN" => "Chinese (Simplified)",
+        "zh_TW" => "Chinese (Traditional)",
+        _       => "Unknown",
+    }
+}
+
 /// Apply the dark theme to egui visuals.
 pub fn apply_theme(ctx: &egui::Context) {
     let mut visuals = egui::Visuals::dark();
@@ -797,14 +807,15 @@ impl SettingsApp {
             ui.label(RichText::new("Language").size(12.0).color(theme::TEXT_SECONDARY));
             ui.add_space(4.0);
             ui.horizontal(|ui| {
-                for &(code, name) in AVAILABLE_LANGUAGES {
+                for &(code, _) in AVAILABLE_LANGUAGES {
+                    let display = language_display_name(code);
                     let is_active = self.language == code;
                     let bg = if is_active { theme::ACCENT_DIM } else { theme::BG_SUBTLE };
                     let border = if is_active { theme::ACCENT } else { theme::BORDER };
                     let fg = if is_active { theme::ACCENT } else { theme::TEXT_PRIMARY };
                     let btn = ui.add(egui::Button::new(
-                        RichText::new(name).size(12.0).color(fg)
-                    ).fill(bg).rounding(Rounding::same(10.0)).min_size(Vec2::new(108.0, 36.0))
+                        RichText::new(display).size(12.0).color(fg)
+                    ).fill(bg).rounding(Rounding::same(10.0)).min_size(Vec2::new(140.0, 36.0))
                     .stroke(Stroke::new(if is_active { 2.0 } else { 1.0 }, border)));
                     if btn.clicked() && !is_active {
                         self.language = code.to_string();
