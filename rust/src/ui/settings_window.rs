@@ -564,11 +564,46 @@ impl SettingsApp {
             };
             ui.label(RichText::new(&profile_label).size(20.0).strong().color(theme::TEXT_PRIMARY));
         });
+        ui.label(RichText::new("Click an action dropdown to remap each button.")
+            .size(12.0).color(theme::TEXT_SECONDARY));
 
         ui.add_space(16.0);
 
-        // Button rows
-        let all_buttons = profile_button_names();
+        // ── Group 1: Main Buttons ──
+        self.draw_button_group(ui, "Main Buttons", "Physical buttons you can click", &[
+            ("xbutton1",  "Back Button",    "Thumb button (rear) — default: browser back"),
+            ("xbutton2",  "Forward Button", "Thumb button (front) — default: browser forward"),
+            ("middle",    "Middle Click",   "Press the scroll wheel down"),
+            ("mode_shift","Mode Shift",     "Button behind the scroll wheel — toggles ratchet/free-spin"),
+        ]);
+
+        ui.add_space(12.0);
+
+        // ── Group 2: Gesture Button ──
+        self.draw_button_group(ui, "Gesture Button", "Hold the thumb gesture button, then tap or swipe", &[
+            ("gesture",       "Tap",        "Quick press and release"),
+            ("gesture_left",  "Swipe Left", "Hold + move mouse left"),
+            ("gesture_right", "Swipe Right","Hold + move mouse right"),
+            ("gesture_up",    "Swipe Up",   "Hold + move mouse up"),
+            ("gesture_down",  "Swipe Down", "Hold + move mouse down"),
+        ]);
+
+        ui.add_space(12.0);
+
+        // ── Group 3: Horizontal Scroll ──
+        self.draw_button_group(ui, "Horizontal Scroll", "Tilt the scroll wheel left or right", &[
+            ("hscroll_left",  "Scroll Left",  "Tilt scroll wheel to the left"),
+            ("hscroll_right", "Scroll Right", "Tilt scroll wheel to the right"),
+        ]);
+    }
+
+    fn draw_button_group(
+        &mut self,
+        ui: &mut Ui,
+        title: &str,
+        description: &str,
+        buttons: &[(&str, &str, &str)], // (key, label, help_text)
+    ) {
         let categories = [
             CATEGORY_NAVIGATION,
             CATEGORY_BROWSER,
@@ -577,64 +612,62 @@ impl SettingsApp {
             CATEGORY_OTHER,
         ];
 
-        for btn in &all_buttons {
-            let label = button_label(btn);
-            let current_action = self.button_actions
-                .get(*btn)
-                .cloned()
-                .unwrap_or_else(|| "none".to_string());
-            let display = action_label(&current_action);
+        card_frame().show(ui, |ui| {
+            card_title(ui, title);
+            card_desc(ui, description);
 
-            // Button row card
-            let is_selected = self.selected_button.as_deref() == Some(*btn);
-            let row_bg = if is_selected { theme::ACCENT_DIM } else { theme::BG_CARD };
-            let row_border = if is_selected { theme::ACCENT } else { theme::BORDER };
+            for &(key, label, help) in buttons {
+                let current_action = self.button_actions
+                    .get(key)
+                    .cloned()
+                    .unwrap_or_else(|| "none".to_string());
+                let display = action_label(&current_action);
 
-            EFrame::none()
-                .fill(row_bg)
-                .stroke(Stroke::new(1.0, row_border))
-                .rounding(Rounding::same(10.0))
-                .inner_margin(Margin::symmetric(16.0, 10.0))
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        // Button name
-                        ui.label(RichText::new(label).size(13.0).strong().color(theme::TEXT_PRIMARY));
+                EFrame::none()
+                    .fill(theme::BG_SUBTLE)
+                    .rounding(Rounding::same(8.0))
+                    .inner_margin(Margin::symmetric(14.0, 10.0))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.vertical(|ui| {
+                                ui.label(RichText::new(label).size(13.0).strong().color(theme::TEXT_PRIMARY));
+                                ui.label(RichText::new(help).size(10.0).color(theme::TEXT_DIM));
+                            });
 
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            // Action combo box
-                            let mut selected = current_action.clone();
-                            ComboBox::from_id_salt(format!("action_{}", btn))
-                                .selected_text(RichText::new(&display).size(12.0).color(theme::ACCENT))
-                                .width(200.0)
-                                .show_ui(ui, |ui| {
-                                    // "None" option
-                                    ui.selectable_value(&mut selected, "none".to_string(),
-                                        RichText::new("None").color(theme::TEXT_DIM));
-                                    for &cat in &categories {
-                                        ui.separator();
-                                        ui.label(RichText::new(cat.to_uppercase()).size(10.0)
-                                            .color(theme::TEXT_DIM));
-                                        for action in ACTIONS.iter().filter(|a| a.category == cat) {
-                                            ui.selectable_value(&mut selected, action.id.to_string(),
-                                                action.label);
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                let mut selected = current_action.clone();
+                                ComboBox::from_id_salt(format!("action_{}", key))
+                                    .selected_text(RichText::new(&display).size(12.0).color(theme::ACCENT))
+                                    .width(180.0)
+                                    .show_ui(ui, |ui| {
+                                        ui.selectable_value(&mut selected, "none".to_string(),
+                                            RichText::new("None (disabled)").color(theme::TEXT_DIM));
+                                        for &cat in &categories {
+                                            ui.separator();
+                                            ui.label(RichText::new(cat.to_uppercase()).size(10.0)
+                                                .color(theme::TEXT_DIM));
+                                            for action in ACTIONS.iter().filter(|a| a.category == cat) {
+                                                ui.selectable_value(&mut selected, action.id.to_string(),
+                                                    action.label);
+                                            }
                                         }
-                                    }
-                                });
+                                    });
 
-                            if selected != current_action {
-                                self.button_actions.insert(btn.to_string(), selected.clone());
-                                self.send(UiMessage::SetMapping {
-                                    profile: self.selected_profile.clone(),
-                                    button: btn.to_string(),
-                                    action_id: selected,
-                                });
-                            }
+                                if selected != current_action {
+                                    self.button_actions.insert(key.to_string(), selected.clone());
+                                    self.send(UiMessage::SetMapping {
+                                        profile: self.selected_profile.clone(),
+                                        button: key.to_string(),
+                                        action_id: selected,
+                                    });
+                                }
+                            });
                         });
                     });
-                });
 
-            ui.add_space(4.0);
-        }
+                ui.add_space(4.0);
+            }
+        });
     }
 }
 
