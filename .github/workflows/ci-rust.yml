@@ -54,7 +54,8 @@ jobs:
             libatk1.0-dev \
             libgdk-pixbuf2.0-dev \
             libpango1.0-dev \
-            libgl1-mesa-dev
+            libgl1-mesa-dev \
+            libxdo-dev
 
       - name: Install macOS system deps
         if: runner.os == 'macOS'
