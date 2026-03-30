@@ -160,17 +160,30 @@ fn run_event_loop(
 
     let event_loop = EventLoop::new().expect("Failed to create event loop");
 
-    // Create tray INSIDE the event loop (macOS needs NSApp initialized by winit first)
     let initial_state = ui_state.lock().unwrap().clone();
     let tray = TrayManager::new(tx.clone(), &initial_state).ok();
     if tray.is_some() {
-        log::info!("Tray icon created (inside event loop)");
+        log::info!("Tray icon created");
     }
+
+    // Track the settings subprocess so we don't spawn duplicates
+    let mut settings_child: Option<std::process::Child> = None;
 
     event_loop.run(move |_event, target| {
         target.set_control_flow(winit::event_loop::ControlFlow::wait_duration(
             std::time::Duration::from_millis(200),
         ));
+
+        // Check if settings subprocess has exited
+        if let Some(ref mut child) = settings_child {
+            match child.try_wait() {
+                Ok(Some(_)) => {
+                    log::info!("Settings subprocess exited");
+                    settings_child = None;
+                }
+                _ => {}
+            }
+        }
 
         if let Some(ref tray) = tray {
             tray.poll_events();
@@ -178,15 +191,27 @@ fn run_event_loop(
                 tray.update(&state);
             }
             if tray.show_settings_flag.swap(false, Ordering::Relaxed) {
-                log::info!("Opening settings subprocess...");
-                if let Ok(exe) = std::env::current_exe() {
-                    match std::process::Command::new(&exe).arg("--settings").spawn() {
-                        Ok(_) => log::info!("Settings subprocess started"),
-                        Err(e) => log::error!("Failed to start settings: {e}"),
+                // Only spawn if not already running
+                if settings_child.is_none() {
+                    log::info!("Opening settings subprocess...");
+                    if let Ok(exe) = std::env::current_exe() {
+                        match std::process::Command::new(&exe).arg("--settings").spawn() {
+                            Ok(child) => {
+                                log::info!("Settings subprocess started (pid={})", child.id());
+                                settings_child = Some(child);
+                            }
+                            Err(e) => log::error!("Failed to start settings: {e}"),
+                        }
                     }
+                } else {
+                    log::debug!("Settings already open, ignoring click");
                 }
             }
             if tray.quit_flag.load(Ordering::Relaxed) {
+                // Kill settings subprocess if running
+                if let Some(ref mut child) = settings_child {
+                    let _ = child.kill();
+                }
                 std::process::exit(0);
             }
         }
