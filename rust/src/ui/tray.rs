@@ -108,11 +108,12 @@ impl TrayManager {
     }
 
     pub fn poll_events(&self) {
-        // Check icon click events (works without menu dispatch)
+        // Only double-click on tray icon opens settings
         while let Ok(event) = TrayIconEvent::receiver().try_recv() {
-            log::info!("[Tray] Icon click: {:?}", event);
-            // Any click on the tray icon opens settings
-            self.show_settings_flag.store(true, Ordering::Relaxed);
+            if matches!(event, TrayIconEvent::DoubleClick { .. }) {
+                log::info!("[Tray] Double-click → open settings");
+                self.show_settings_flag.store(true, Ordering::Relaxed);
+            }
         }
 
         // Check menu events
