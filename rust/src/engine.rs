@@ -652,6 +652,7 @@ fn setup_hooks_inner(
         deadzone: settings.gesture_deadzone,
         timeout_ms: settings.gesture_timeout_ms,
         cooldown_ms: settings.gesture_cooldown_ms,
+        ..GestureConfig::default()
     });
 
     // Emit a mapping snapshot to the debug callback.
@@ -1040,14 +1041,18 @@ mod tests {
     }
 
     #[test]
-    fn gesture_covers_click_and_all_four_swipes() {
+    fn gesture_maps_to_click_only() {
         let types: Vec<MouseEventType> =
             button_to_event_types("gesture").iter().map(|&(e, _)| e).collect();
-        assert!(types.contains(&MouseEventType::GestureClick));
-        assert!(types.contains(&MouseEventType::GestureSwipeLeft));
-        assert!(types.contains(&MouseEventType::GestureSwipeRight));
-        assert!(types.contains(&MouseEventType::GestureSwipeUp));
-        assert!(types.contains(&MouseEventType::GestureSwipeDown));
+        assert_eq!(types, vec![MouseEventType::GestureClick]);
+    }
+
+    #[test]
+    fn gesture_directions_map_individually() {
+        assert_eq!(button_to_event_types("gesture_left"), &[(MouseEventType::GestureSwipeLeft, false)]);
+        assert_eq!(button_to_event_types("gesture_right"), &[(MouseEventType::GestureSwipeRight, false)]);
+        assert_eq!(button_to_event_types("gesture_up"), &[(MouseEventType::GestureSwipeUp, false)]);
+        assert_eq!(button_to_event_types("gesture_down"), &[(MouseEventType::GestureSwipeDown, false)]);
     }
 
     #[test]

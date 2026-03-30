@@ -121,6 +121,9 @@ pub struct GestureConfig {
     pub deadzone: u32,
     pub timeout_ms: u32,
     pub cooldown_ms: u32,
+    /// How long (ms) the candidate direction must remain stable before firing.
+    /// Set to 0 in tests for instant swipe detection.
+    pub confirm_ms: u64,
 }
 
 impl Default for GestureConfig {
@@ -130,6 +133,7 @@ impl Default for GestureConfig {
             deadzone: 40,
             timeout_ms: 3000,
             cooldown_ms: 500,
+            confirm_ms: 80,
         }
     }
 }
@@ -170,9 +174,6 @@ pub struct GestureDetector {
 }
 
 impl GestureDetector {
-    /// How long (ms) the candidate direction must remain stable before firing.
-    const CONFIRM_MS: u64 = 80;
-
     pub fn new(config: GestureConfig) -> Self {
         Self {
             config,
@@ -197,6 +198,7 @@ impl GestureDetector {
             deadzone: config.deadzone,
             timeout_ms: config.timeout_ms.max(250),
             cooldown_ms: config.cooldown_ms,
+            confirm_ms: config.confirm_ms,
         };
     }
 
@@ -315,15 +317,29 @@ impl GestureDetector {
             }
         };
 
+        // If confirm_ms is 0, fire immediately (used in tests and for instant response)
+        if self.config.confirm_ms == 0 {
+            self.triggered = true;
+            log::debug!(
+                "[GestureDetector] instant {:?} dx={:.0} dy={:.0}",
+                dir, self.delta_x, self.delta_y
+            );
+            self.cooldown_until = Some(
+                Instant::now() + Duration::from_millis(self.config.cooldown_ms as u64),
+            );
+            self.finish_tracking();
+            return Some(dir);
+        }
+
         // Direction confirmation: the candidate must stay stable for
-        // CONFIRM_MS before we fire.  If the direction changes, restart
+        // confirm_ms before we fire.  If the direction changes, restart
         // the confirmation timer.
         match self.candidate_dir {
             Some(prev) if prev == dir => {
                 // Same direction — check if confirmed
                 if let Some(since) = self.candidate_since {
                     let held_ms = now.duration_since(since).as_millis() as u64;
-                    if held_ms >= Self::CONFIRM_MS {
+                    if held_ms >= self.config.confirm_ms {
                         self.triggered = true;
                         log::debug!(
                             "[GestureDetector] confirmed {:?} dx={:.0} dy={:.0} after {}ms",
@@ -549,6 +565,7 @@ mod tests {
             deadzone,
             timeout_ms: 3000,
             cooldown_ms: 0, // no cooldown so tests can re-trigger
+            confirm_ms: 0,  // instant confirmation for tests
         };
         let mut d = GestureDetector::new(cfg);
         d.set_enabled(true);
@@ -597,12 +614,11 @@ mod tests {
     // -- deadzone -----------------------------------------------------------
 
     #[test]
-    fn deadzone_rejects_diagonal() {
-        // threshold=50, deadzone=40: a 55x45 vector has dominant=55, cross_limit=max(40, 55*0.35)=max(40,19.25)=40
-        // abs_y=45 > cross_limit=40 → None (ambiguous diagonal)
+    fn near_diagonal_classified_by_atan2() {
+        // With atan2, (55, 45) → angle ≈ 39° which falls in the Right cone (±45°)
         let mut d = detector(50, 40);
         let result = d.accumulate(55.0, 45.0, "test");
-        assert_eq!(result, None, "diagonal should be rejected by deadzone");
+        assert_eq!(result, Some(MouseEvent::GestureSwipeRight), "39° should map to Right");
     }
 
     #[test]
@@ -640,6 +656,7 @@ mod tests {
             deadzone: 0,
             timeout_ms: 3000,
             cooldown_ms: 0,
+            confirm_ms: 0,
         };
         let mut d = GestureDetector::new(cfg);
         // deliberately NOT calling set_enabled(true)
@@ -657,6 +674,7 @@ mod tests {
             deadzone: 10,
             timeout_ms: 3000,
             cooldown_ms: 0,
+            confirm_ms: 0,
         };
         let mut d = GestureDetector::new(cfg);
         d.set_enabled(true);
