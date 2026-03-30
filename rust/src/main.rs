@@ -19,7 +19,7 @@ use std::sync::{Arc, Mutex};
 
 use engine::{Engine, EngineConfig};
 use hid_gesture::HidBackend;
-use ui::{MainApp, TrayManager, UiMessage, UiState};
+use ui::{TrayManager, UiMessage, UiState};
 
 fn parse_args() -> (HidBackend, bool, bool) {
     let mut hid_backend = HidBackend::Auto;
@@ -56,7 +56,7 @@ fn main() {
         }
     };
 
-    // ---- Load config (before logging, so debug_mode is available) ----
+    // ---- Load config ----
     let cfg = match config::load_config() {
         Ok(c) => c,
         Err(e) => {
@@ -96,26 +96,21 @@ fn main() {
     let (tx, rx) = std::sync::mpsc::channel::<UiMessage>();
 
     // ---- Engine ----
-    let engine_cfg = EngineConfig {
-        hid_backend,
-        debug,
-    };
-    let mut engine = Engine::new(cfg, engine_cfg, Some(ui_state.clone()));
+    let mut engine = Engine::new(
+        cfg,
+        EngineConfig { hid_backend, debug },
+        Some(ui_state.clone()),
+    );
 
-    // Wire debug callbacks
+    engine.set_debug_callback(Box::new(|msg| log::debug!("[event] {msg}")));
     {
-        engine.set_debug_callback(Box::new(move |msg| {
-            log::debug!("[event] {msg}");
-        }));
-
-        let state2 = ui_state.clone();
+        let s2 = ui_state.clone();
         engine.set_gesture_callback(Box::new(move |evt, btn, action| {
             log::debug!("[gesture] {evt} {btn} → {action}");
-            let _ = (state2.lock(), evt, btn, action);
+            drop(s2.lock());
         }));
     }
 
-    // Start engine background threads
     if let Err(e) = engine.start() {
         log::error!("Engine failed to start: {e}");
     }
@@ -123,9 +118,6 @@ fn main() {
     // ---- Tray ----
     let initial_state = ui_state.lock().unwrap().clone();
     let tray = TrayManager::new(tx.clone(), &initial_state).ok();
-    if tray.is_none() {
-        log::warn!("System tray failed to initialise — running without tray");
-    }
 
     // ---- Engine message loop (background thread) ----
     let cfg_for_ui = engine.get_config();
@@ -142,131 +134,143 @@ fn main() {
                     }
                     UiMessage::SetDpi(dpi) => {
                         eng.set_dpi(dpi);
-                        if let Ok(mut s) = state.lock() {
-                            s.dpi = dpi;
-                        }
+                        if let Ok(mut s) = state.lock() { s.dpi = dpi; }
                     }
                     UiMessage::SetSmartShift(mode) => {
                         eng.set_smart_shift(&mode);
-                        if let Ok(mut s) = state.lock() {
-                            s.smart_shift_mode = mode;
-                        }
+                        if let Ok(mut s) = state.lock() { s.smart_shift_mode = mode; }
                     }
                     UiMessage::SetMapping { profile, button, action_id } => {
-                        if let Ok(mut cfg) = cfg_arc.lock() {
-                            config::set_mapping(&mut cfg, &button, &action_id, &profile).ok();
+                        if let Ok(mut c) = cfg_arc.lock() {
+                            config::set_mapping(&mut c, &button, &action_id, &profile).ok();
                         }
                         eng.reload_mappings();
                     }
                     UiMessage::SwitchProfile(name) => {
-                        if let Ok(mut cfg) = cfg_arc.lock() {
-                            cfg.active_profile = name.clone();
-                            config::save_config(&cfg).ok();
+                        if let Ok(mut c) = cfg_arc.lock() {
+                            c.active_profile = name.clone();
+                            config::save_config(&c).ok();
                         }
                         eng.reload_mappings();
-                        if let Ok(mut s) = state.lock() {
-                            s.current_profile = name;
-                        }
+                        if let Ok(mut s) = state.lock() { s.current_profile = name; }
                     }
                     UiMessage::CreateProfile { name, label, copy_from } => {
-                        if let Ok(mut cfg) = cfg_arc.lock() {
-                            config::create_profile(
-                                &mut cfg,
-                                &name,
-                                &label,
-                                copy_from.as_deref(),
-                            ).ok();
+                        if let Ok(mut c) = cfg_arc.lock() {
+                            config::create_profile(&mut c, &name, &label, copy_from.as_deref()).ok();
                         }
                     }
                     UiMessage::DeleteProfile(name) => {
-                        if let Ok(mut cfg) = cfg_arc.lock() {
-                            config::delete_profile(&mut cfg, &name).ok();
+                        if let Ok(mut c) = cfg_arc.lock() {
+                            config::delete_profile(&mut c, &name).ok();
                         }
                         eng.reload_mappings();
                     }
                     UiMessage::SetStartAtLogin(v) => {
                         startup::set_login_item(v).ok();
-                        if let Ok(mut cfg) = cfg_arc.lock() {
-                            cfg.settings.start_at_login = v;
-                            config::save_config(&cfg).ok();
+                        if let Ok(mut c) = cfg_arc.lock() {
+                            c.settings.start_at_login = v;
+                            config::save_config(&c).ok();
                         }
                     }
                     UiMessage::SetStartMinimized(v) => {
-                        if let Ok(mut cfg) = cfg_arc.lock() {
-                            cfg.settings.start_minimized = v;
-                            config::save_config(&cfg).ok();
+                        if let Ok(mut c) = cfg_arc.lock() {
+                            c.settings.start_minimized = v;
+                            config::save_config(&c).ok();
                         }
                     }
                     UiMessage::SetInvertHScroll(v) => {
-                        if let Ok(mut cfg) = cfg_arc.lock() {
-                            cfg.settings.invert_hscroll = v;
-                            config::save_config(&cfg).ok();
+                        if let Ok(mut c) = cfg_arc.lock() {
+                            c.settings.invert_hscroll = v;
+                            config::save_config(&c).ok();
                         }
                         eng.reload_mappings();
                     }
                     UiMessage::SetInvertVScroll(v) => {
-                        if let Ok(mut cfg) = cfg_arc.lock() {
-                            cfg.settings.invert_vscroll = v;
-                            config::save_config(&cfg).ok();
+                        if let Ok(mut c) = cfg_arc.lock() {
+                            c.settings.invert_vscroll = v;
+                            config::save_config(&c).ok();
                         }
                     }
                     UiMessage::SetHScrollThreshold(v) => {
-                        if let Ok(mut cfg) = cfg_arc.lock() {
-                            cfg.settings.hscroll_threshold = v;
-                            config::save_config(&cfg).ok();
+                        if let Ok(mut c) = cfg_arc.lock() {
+                            c.settings.hscroll_threshold = v;
+                            config::save_config(&c).ok();
                         }
                         eng.reload_mappings();
                     }
                     UiMessage::SetLanguage(lang) => {
-                        if let Ok(mut cfg) = cfg_arc.lock() {
-                            cfg.settings.language = lang;
-                            config::save_config(&cfg).ok();
+                        if let Ok(mut c) = cfg_arc.lock() {
+                            c.settings.language = lang;
+                            config::save_config(&c).ok();
                         }
                     }
                     UiMessage::SetDebugMode(v) => {
                         eng.set_debug_enabled(v);
-                        if let Ok(mut cfg) = cfg_arc.lock() {
-                            cfg.settings.debug_mode = v;
-                            config::save_config(&cfg).ok();
+                        if let Ok(mut c) = cfg_arc.lock() {
+                            c.settings.debug_mode = v;
+                            config::save_config(&c).ok();
                         }
                     }
-                    UiMessage::ShowSettings | UiMessage::HideSettings => {
-                        // handled in main thread via eframe/tray
-                    }
+                    UiMessage::ShowSettings | UiMessage::HideSettings => {}
                 }
             }
         });
     }
 
-    // ---- Main thread: eframe drives the native event loop ----
-    // eframe runs once for the lifetime of the process.  The settings window
-    // hides on close and re-shows when the tray "Settings" item is clicked.
-    // When hidden, rendering is skipped entirely (1-second repaint timer
-    // just to poll tray events), so CPU/GPU usage is near zero.
     log::info!("Mouser ready (start_minimized={})", start_minimized);
 
-    let app = MainApp::new(
-        tx,
-        ui_state,
-        cfg_for_ui,
-        tray,
-        !start_minimized,
-    );
+    // ---- Main thread: lightweight tray-only event loop ----
+    //
+    // No eframe runs here.  The main thread just polls tray events and
+    // pumps the macOS run loop (required for tray-icon menu delivery).
+    // Memory: ~7 MB.  eframe is only launched on demand when "Settings"
+    // is clicked, and fully destroyed when the window is closed — all
+    // GPU/OpenGL/WebKit resources are freed.
 
-    let native_options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_title("Mouser Settings")
-            .with_inner_size([900.0, 620.0])
-            .with_min_inner_size([780.0, 520.0])
-            .with_visible(!start_minimized),
-        ..Default::default()
-    };
-
-    if let Err(e) = eframe::run_native(
-        "Mouser",
-        native_options,
-        Box::new(|_cc| Ok(Box::new(app))),
-    ) {
-        log::error!("UI error: {e}");
+    if !start_minimized {
+        // Open settings window immediately on first launch
+        open_settings(tx.clone(), ui_state.clone(), cfg_for_ui.clone());
     }
+
+    loop {
+        // Poll tray
+        if let Some(ref tray) = tray {
+            tray.poll_events();
+            if let Ok(state) = ui_state.lock() {
+                tray.update(&state);
+            }
+            if tray.show_settings_flag.swap(false, std::sync::atomic::Ordering::Relaxed) {
+                open_settings(tx.clone(), ui_state.clone(), cfg_for_ui.clone());
+            }
+            if tray.quit_flag.load(std::sync::atomic::Ordering::Relaxed) {
+                break;
+            }
+        }
+
+        // Pump the macOS run loop so tray menu events are delivered.
+        #[cfg(target_os = "macos")]
+        {
+            extern "C" {
+                fn CFRunLoopRunInMode(mode: *const std::ffi::c_void, seconds: f64, returnAfterSourceHandled: u8) -> i32;
+                static kCFRunLoopDefaultMode: *const std::ffi::c_void;
+            }
+            unsafe {
+                CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.1, 0);
+            }
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+    }
+}
+
+/// Open the settings window (blocks until closed, then all GPU resources are freed).
+fn open_settings(
+    tx: std::sync::mpsc::Sender<UiMessage>,
+    ui_state: Arc<Mutex<UiState>>,
+    config: Arc<Mutex<config::Config>>,
+) {
+    ui::run_settings_window(tx, ui_state, config);
 }
