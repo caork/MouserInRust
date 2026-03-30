@@ -303,7 +303,7 @@ mod imp {
 
     fn listen_loop(device: &mut Device, uinput: &mut VirtualDevice, state: &Arc<Mutex<HookState>>) {
         use std::os::unix::io::AsRawFd;
-        use nix::poll::{poll, PollFd, PollFlags};
+        use nix::poll::{poll, PollFd, PollFlags, PollTimeout};
         use std::os::fd::BorrowedFd;
 
         let raw_fd = device.as_raw_fd();
@@ -318,7 +318,7 @@ mod imp {
             // Poll with 500 ms timeout so we can check rescan_requested regularly
             let borrowed = unsafe { BorrowedFd::borrow_raw(raw_fd) };
             let mut fds = [PollFd::new(borrowed, PollFlags::POLLIN)];
-            let ready = poll(&mut fds, 500).unwrap_or(0);
+            let ready = poll(&mut fds, PollTimeout::try_from(500).unwrap()).unwrap_or(0);
             if ready == 0 {
                 continue;
             }
