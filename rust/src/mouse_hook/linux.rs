@@ -317,7 +317,7 @@ mod imp {
 
             // Poll with 500 ms timeout so we can check rescan_requested regularly
             let borrowed = unsafe { BorrowedFd::borrow_raw(raw_fd) };
-            let mut fds = [PollFd::new(&borrowed, PollFlags::POLLIN)];
+            let mut fds = [PollFd::new(borrowed, PollFlags::POLLIN)];
             let ready = poll(&mut fds, 500).unwrap_or(0);
             if ready == 0 {
                 continue;

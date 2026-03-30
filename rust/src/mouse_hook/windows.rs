@@ -128,9 +128,9 @@ mod imp {
         let mut fire_event: Option<MouseEvent> = None;
         let mut should_block = false;
         let mut scroll_data: Option<MouseEventData> = None;
+        let state_arc = get_hook_state().clone();
 
         {
-            let state_arc = get_hook_state().clone();
             // Use try_lock to avoid blocking the hook thread; if the lock is
             // contended we simply pass the event through.
             if let Ok(mut state) = state_arc.try_lock() {
