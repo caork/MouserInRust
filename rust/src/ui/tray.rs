@@ -137,7 +137,13 @@ impl TrayManager {
         let settings_id = self.settings_item.id().clone();
         let quit_id = self.quit_item.id().clone();
 
+        // Also check TrayIconEvent (click on icon itself)
+        while let Ok(event) = tray_icon::TrayIconEvent::receiver().try_recv() {
+            log::info!("[Tray] Icon event: {:?}", event);
+        }
+
         while let Ok(event) = MenuEvent::receiver().try_recv() {
+            log::info!("[Tray] Menu event: {:?}", event.id());
             let id = event.id().clone();
             if id == toggle_id {
                 // Open the settings window
