@@ -13,7 +13,6 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT, KEYEVENTF_EXTENDEDKEY,
     KEYEVENTF_KEYUP, MOUSEEVENTF_HWHEEL, MOUSEEVENTF_WHEEL, MOUSEINPUT, VIRTUAL_KEY,
 };
-use windows::Win32::Foundation::LPARAM;
 
 // ---------------------------------------------------------------------------
 // Virtual-key code constants

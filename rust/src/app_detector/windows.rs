@@ -134,7 +134,7 @@ fn resolve_uwp_child(hwnd: HWND) -> Option<String> {
     };
     unsafe {
         let _ = EnumChildWindows(
-            hwnd,
+            Some(hwnd),
             Some(enum_child_callback),
             LPARAM(&mut state as *mut _ as isize),
         );

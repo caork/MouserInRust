@@ -34,6 +34,12 @@ mod imp {
         WM_MOUSEHWHEEL, WM_QUIT, WM_XBUTTONDOWN, WM_XBUTTONUP, HHOOK, MSLLHOOKSTRUCT,
     };
 
+    // HHOOK contains a raw *mut c_void and is !Send in the windows crate.
+    // We only ever access the handle through a Mutex, so this is safe.
+    struct SendHHOOK(HHOOK);
+    unsafe impl Send for SendHHOOK {}
+    unsafe impl Sync for SendHHOOK {}
+
     // Windows constants not re-exported by the `windows` crate helpers
     const HC_ACTION: i32 = 0;
     const XBUTTON1: u16 = 0x0001;
@@ -79,8 +85,9 @@ mod imp {
 
     // The HHOOK handle used inside the callback to call CallNextHookEx.
     // Must be set before the message pump starts.
-    static HOOK_HANDLE: OnceLock<Mutex<Option<HHOOK>>> = OnceLock::new();
-    fn hook_handle_lock() -> &'static Mutex<Option<HHOOK>> {
+    // Wrapped in SendHHOOK because HHOOK contains *mut c_void and is !Send.
+    static HOOK_HANDLE: OnceLock<Mutex<Option<SendHHOOK>>> = OnceLock::new();
+    fn hook_handle_lock() -> &'static Mutex<Option<SendHHOOK>> {
         HOOK_HANDLE.get_or_init(|| Mutex::new(None))
     }
 
@@ -97,7 +104,8 @@ mod imp {
             let hh = hook_handle_lock()
                 .lock()
                 .unwrap()
-                .unwrap_or(HHOOK::default());
+                .as_ref()
+                .map(|s| s.0);
             return CallNextHookEx(hh, n_code, w_param, l_param);
         }
 
@@ -110,7 +118,8 @@ mod imp {
             let hh = hook_handle_lock()
                 .lock()
                 .unwrap()
-                .unwrap_or(HHOOK::default());
+                .as_ref()
+                .map(|s| s.0);
             return CallNextHookEx(hh, n_code, w_param, l_param);
         }
 
@@ -188,7 +197,8 @@ mod imp {
         let hh = hook_handle_lock()
             .lock()
             .unwrap()
-            .unwrap_or(HHOOK::default());
+            .as_ref()
+            .map(|s| s.0);
         CallNextHookEx(hh, n_code, w_param, l_param)
     }
 
@@ -201,8 +211,10 @@ mod imp {
             let tid = GetCurrentThreadId();
             *thread_id_slot.lock().unwrap() = tid;
 
-            let hmod = GetModuleHandleW(None).unwrap_or(HINSTANCE::default());
-            let hook = match SetWindowsHookExW(WH_MOUSE_LL, Some(ll_mouse_proc), hmod, 0) {
+            let hmod: HINSTANCE = GetModuleHandleW(None)
+                .map(|m| m.into())
+                .unwrap_or_default();
+            let hook = match SetWindowsHookExW(WH_MOUSE_LL, Some(ll_mouse_proc), Some(hmod), 0) {
                 Ok(h) => h,
                 Err(e) => {
                     log::error!("[MouseHook] SetWindowsHookExW failed: {e}");
@@ -211,14 +223,14 @@ mod imp {
                 }
             };
 
-            *hook_handle_lock().lock().unwrap() = Some(hook);
+            *hook_handle_lock().lock().unwrap() = Some(SendHHOOK(hook));
             log::info!("[MouseHook] Hook installed successfully");
             let _ = ready_tx.send(true);
 
             // Message pump — required to keep WH_MOUSE_LL alive
             let mut msg = MSG::default();
             loop {
-                let ret = GetMessageW(&mut msg, HWND::default(), 0, 0);
+                let ret = GetMessageW(&mut msg, None, 0, 0);
                 match ret.0 {
                     0 | -1 => break,
                     _ => {

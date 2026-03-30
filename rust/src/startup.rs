@@ -75,10 +75,11 @@ mod windows_impl {
             RegOpenKeyExW(
                 HKEY_CURRENT_USER,
                 PCWSTR(subkey.as_ptr()),
-                0,
+                None,
                 KEY_SET_VALUE,
                 &mut hkey,
             )
+            .ok()
             .context("RegOpenKeyExW failed")?;
         }
 
@@ -89,14 +90,18 @@ mod windows_impl {
                 // REG_SZ value is a null-terminated UTF-16 string; size in bytes
                 let byte_len = (cmd_wide.len() * 2) as u32;
                 unsafe {
+                    let byte_slice = std::slice::from_raw_parts(
+                        cmd_wide.as_ptr() as *const u8,
+                        byte_len as usize,
+                    );
                     RegSetValueExW(
                         hkey,
                         PCWSTR(value_name.as_ptr()),
-                        0,
+                        None,
                         REG_SZ,
-                        Some(cmd_wide.as_ptr() as *const u8),
-                        byte_len,
+                        Some(byte_slice),
                     )
+                    .ok()
                     .context("RegSetValueExW failed")?;
                 }
             } else {
