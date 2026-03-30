@@ -16,6 +16,7 @@ tempfile = "3"
 anyhow = "1"
 tray-icon = "0.19"
 egui = "0.30"
+winit = "0.30"
 
 # eframe: platform-specific because Linux needs x11, Windows needs default winit features
 [target.'cfg(target_os = "macos")'.dependencies.eframe]
