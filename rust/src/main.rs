@@ -219,21 +219,37 @@ fn main() {
 
     log::info!("Mouser ready (start_minimized={})", start_minimized);
 
-    // ---- Main thread: lightweight tray-only event loop ----
-    //
-    // No eframe runs here.  The main thread just polls tray events and
-    // pumps the macOS run loop (required for tray-icon menu delivery).
-    // Memory: ~7 MB.  eframe is only launched on demand when "Settings"
-    // is clicked, and fully destroyed when the window is closed — all
-    // GPU/OpenGL/WebKit resources are freed.
-
-    if !start_minimized {
-        // Open settings window immediately on first launch
-        open_settings(tx.clone(), ui_state.clone(), cfg_for_ui.clone());
+    // ---- macOS: set as accessory app (no dock icon, tray only) ----
+    #[cfg(target_os = "macos")]
+    {
+        extern "C" {
+            fn objc_getClass(name: *const std::ffi::c_char) -> *mut std::ffi::c_void;
+            fn sel_registerName(name: *const std::ffi::c_char) -> *mut std::ffi::c_void;
+        }
+        // objc_msgSend with different signatures
+        extern "C" {
+            #[link_name = "objc_msgSend"]
+            fn msg_send_void(obj: *mut std::ffi::c_void, sel: *mut std::ffi::c_void) -> *mut std::ffi::c_void;
+            #[link_name = "objc_msgSend"]
+            fn msg_send_i64(obj: *mut std::ffi::c_void, sel: *mut std::ffi::c_void, val: i64) -> i64;
+        }
+        unsafe {
+            let cls = objc_getClass(b"NSApplication\0".as_ptr() as *const _);
+            let shared_app = sel_registerName(b"sharedApplication\0".as_ptr() as *const _);
+            let app = msg_send_void(cls, shared_app);
+            // NSApplicationActivationPolicyAccessory = 1 (no dock icon)
+            let set_policy = sel_registerName(b"setActivationPolicy:\0".as_ptr() as *const _);
+            msg_send_i64(app, set_policy, 1);
+        }
     }
 
+    // ---- Main thread: lightweight tray-only event loop ----
+    //
+    // No eframe runs here.  Memory: ~7 MB.  eframe is only launched
+    // when "Settings" is clicked in the tray, and fully destroyed when
+    // the window is closed (all GPU/WebKit resources freed).
+
     loop {
-        // Poll tray
         if let Some(ref tray) = tray {
             tray.poll_events();
             if let Ok(state) = ui_state.lock() {
@@ -247,22 +263,18 @@ fn main() {
             }
         }
 
-        // Pump the macOS run loop so tray menu events are delivered.
+        // Pump the native event loop for tray menu delivery.
         #[cfg(target_os = "macos")]
         {
             extern "C" {
                 fn CFRunLoopRunInMode(mode: *const std::ffi::c_void, seconds: f64, returnAfterSourceHandled: u8) -> i32;
                 static kCFRunLoopDefaultMode: *const std::ffi::c_void;
             }
-            unsafe {
-                CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.1, 0);
-            }
+            unsafe { CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.1, 0); }
         }
 
         #[cfg(not(target_os = "macos"))]
-        {
-            std::thread::sleep(std::time::Duration::from_millis(100));
-        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
     }
 }
 
