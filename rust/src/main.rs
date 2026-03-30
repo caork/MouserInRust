@@ -55,6 +55,15 @@ fn main() {
         let config = Arc::new(Mutex::new(cfg));
         let (tx, _rx) = std::sync::mpsc::channel::<UiMessage>();
         ui::run_settings_window(tx, ui_state, config);
+
+        // Kill any lingering AutoFill helper processes spawned by eframe/OpenGL
+        #[cfg(target_os = "macos")]
+        {
+            let pid = std::process::id();
+            let _ = std::process::Command::new("pkill")
+                .args(["-P", &pid.to_string()])
+                .status();
+        }
         return;
     }
 
